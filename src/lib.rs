@@ -30,6 +30,10 @@ struct Opts {
         default_value = "benchmark_results"
     )]
     outdir: PathBuf,
+
+    /// only run post processor, not benchmarks
+    #[structopt(short = "p", long = "post")]
+    only_post_process: bool,
 }
 trait TryFrom<P> {
     fn try_from(p: P) -> io::Result<Self>
@@ -217,6 +221,7 @@ impl BenchmarkResult {
 
 pub trait Postprocessor {
     fn process(&self, r: &BenchmarkResult) -> Result<()>;
+    fn print_results(self);
 }
 
 pub fn main(post: impl Postprocessor + Sync) -> Result<()> {
@@ -245,7 +250,7 @@ pub fn main(post: impl Postprocessor + Sync) -> Result<()> {
             })
     };
 
-    {
+    if !config.opts.only_post_process {
         let ui = Ui::new("Benchmarking", todo.len());
         done.par_extend(todo[..].par_iter().filter_map(|conf| {
             let result = match run(&ui, &conf) {
@@ -273,6 +278,7 @@ pub fn main(post: impl Postprocessor + Sync) -> Result<()> {
         });
     }
 
+    post.print_results();
     Ok(())
 }
 
