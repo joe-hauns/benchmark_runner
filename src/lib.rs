@@ -10,7 +10,7 @@ use std::sync::Arc;
 use structopt::*;
 type Result<A> = std::result::Result<A, Box<dyn std::error::Error>>;
 
-#[derive(Debug, StructOpt)]
+#[derive(StructOpt, Clone,Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[structopt(name = "example", about = "An example of StructOpt usage.")]
 struct Opts {
     /// input directory. Must contain a directory named `solvers` and a directory called `benchmarks`.
@@ -61,8 +61,8 @@ impl Opts {
     }
 }
 
-#[derive(Debug)]
-struct Benchmark {
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub struct Benchmark {
     file: PathBuf,
 }
 
@@ -79,8 +79,8 @@ impl fmt::Display for Benchmark {
 }
 
 impl Benchmark {
-    fn id(&self) -> &PathBuf {
-        &self.file /*.file_name().unwrap()*/
+    pub fn file(&self) -> &OsStr {
+        &self.file.file_name().unwrap()
     }
 }
 
@@ -90,8 +90,8 @@ impl TryFrom<PathBuf> for Benchmark {
     }
 }
 
-#[derive(Debug)]
-struct Solver {
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub struct Solver {
     bin: PathBuf,
 }
 
@@ -102,7 +102,7 @@ impl fmt::Display for Solver {
 }
 
 impl Solver {
-    fn id(&self) -> &OsStr {
+    pub fn file(&self) -> &OsStr {
         &self.bin.file_name().unwrap()
     }
 }
@@ -113,7 +113,7 @@ impl TryFrom<PathBuf> for Solver {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct BenchConf {
     config: Arc<Config>,
     benchmark: Arc<Benchmark>,
@@ -129,9 +129,9 @@ impl BenchConf {
     }
     fn outdir(&self) -> PathBuf {
         let mut path = PathBuf::from(&self.config.opts.outdir);
-        path.push(self.solver.id());
+        path.push(self.solver.file());
         path.push(format!("{}", self.config.timeout));
-        path.push(self.benchmark.id());
+        path.push(self.benchmark.file());
         path
     }
 
@@ -155,7 +155,7 @@ impl BenchConf {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct Config {
     solvers: Vec<Arc<Solver>>,
     benchmarks: Vec<Arc<Benchmark>>,
@@ -186,12 +186,18 @@ impl Ui {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct BenchmarkResult {
     run: BenchConf,
 }
 
 impl BenchmarkResult {
+    pub fn benchmark(&self) -> &Benchmark {
+        &self.run.benchmark
+    }
+    pub fn solver(&self) -> &Solver {
+        &self.run.solver
+    }
     pub fn stdout(&self) -> io::Result<impl io::Read> {
         File::open(self.run.stdout())
     }
