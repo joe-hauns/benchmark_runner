@@ -163,7 +163,13 @@ struct Config {
     timeout: usize,
 }
 
-impl Config {}
+impl Config {
+    fn postpro_file(&self, post: &impl Postprocessor) -> io::Result<PathBuf> {
+        let dir = self.opts.outdir.join("post_proc");
+        create_dir_all(&dir)?;
+        Ok(dir.join(post.id()))
+    }
+}
 use indicatif::*;
 
 struct Ui {
@@ -286,7 +292,7 @@ pub fn main(post: impl Postprocessor + Sync) -> Result<()> {
         });
     }
 
-    let file = config.opts.outdir.join("post_proc").join(post.id());
+    let file = config.postpro_file(&post)?;
     println!("writing to output file: {}", file.display());
     post.write_results(File::create(file)?)?;
     Ok(())
