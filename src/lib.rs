@@ -3,6 +3,7 @@ use rayon::prelude::*;
 use std::ffi::*;
 use std::fmt;
 use std::fs::*;
+use std::fs;
 use std::io;
 use std::path::*;
 use std::process::*;
@@ -135,6 +136,9 @@ impl BenchConf {
         path
     }
 
+    fn cmd(&self) -> PathBuf {
+        self.outdir().join("cmd")
+    }
     fn stdout(&self) -> PathBuf {
         self.outdir().join("stdout")
     }
@@ -321,7 +325,8 @@ fn run(ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
                     None => msg.push_str(" ???"),
                 }
             })*
-            ui.println(msg);
+            // ui.println(msg);
+            fs::write(conf.cmd(), format!("{}\n", msg))?;
             // println!();
             Command::new($bin)$(.arg($args))*
         }}
