@@ -9,9 +9,6 @@ edition = "2018"
 [dependencies]
 structopt = "0.3"
 itertools = "0.9"
-# progress_bar = "0.1"
-# termsize = "0.1"
 indicatif = {version = "0.14", features = ["with_rayon"]}
 rayon = "1.1"
 num_cpus = "1.12"
-
