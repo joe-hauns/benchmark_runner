@@ -9,16 +9,33 @@ use std::path::*;
 use std::process::*;
 use std::sync::Arc;
 use structopt::*;
-type Result<A> = std::result::Result<A, Box<dyn std::error::Error>>;
+type Result<A> = DynResult<A>;
+type DynResult<A> = std::result::Result<A, Box<dyn std::error::Error>>;
 
-#[derive(StructOpt, Clone,Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+macro_rules! warn {
+    ($fmt:expr $(,$x:tt)*) => {{ let _ = eprintln!($fmt $(,$x)*); }}
+}
+
+#[cfg(test)]
+mod test;
+
+#[derive(StructOpt, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[structopt(name = "example", about = "An example of StructOpt usage.")]
 struct Opts {
-    /// input directory. Must contain a directory named `solvers` and a directory called `benchmarks`.
-    ///
-    /// <indir>/solvers must contain executables that will be invoked with `<bin> <benchmark> <timeout_secs>`
-    #[structopt(parse(from_os_str), short = "i", long = "input", default_value = ".")]
-    indir: PathBuf,
+    /// directory that must containn must contain poroblem instance files, that will be passed to
+    /// the solver as first argument.
+    #[structopt(
+        parse(from_os_str),
+        short = "b",
+        long = "benchmarks",
+        default_value = "benchmarks"
+    )]
+    bench_dir: PathBuf,
+
+    /// Directory containing solvers. These solvers must be executables that will be invoked by
+    /// $ <bin> <benchmark> <timeout_secs>
+    #[structopt(parse(from_os_str), short = "s", long = "solvers", default_value = "solvers")]
+    solver_dir: PathBuf,
 
     /// timeout in seconds
     timeout: usize,
@@ -35,7 +52,13 @@ struct Opts {
     /// only run post processor, not benchmarks
     #[structopt(short = "p", long = "post")]
     only_post_process: bool,
+
+    /// How many threads shall be ran in parallel? Default: number of physical cpus
+    #[structopt(short = "t", long = "threads")]
+    num_threads: Option<usize>,
+
 }
+
 trait TryFrom<P> {
     fn try_from(p: P) -> io::Result<Self>
     where
@@ -54,8 +77,8 @@ impl Opts {
     }
     fn validate(self) -> io::Result<Config> {
         Ok(Config {
-            solvers: Self::lines_to_files(&self.indir.join("solvers"))?,
-            benchmarks: Self::lines_to_files(&self.indir.join("benchmarks"))?,
+            solvers: Self::lines_to_files(&self.solver_dir)?,
+            benchmarks: Self::lines_to_files(&self.bench_dir)?,
             timeout: self.timeout,
             opts: self,
         })
@@ -65,6 +88,13 @@ impl Opts {
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Benchmark {
     file: PathBuf,
+}
+
+impl Benchmark {
+    #[cfg(test)]
+    fn new(file: PathBuf) -> Self {
+        Benchmark { file, }
+    }
 }
 
 impl fmt::Display for BenchConf {
@@ -94,6 +124,13 @@ impl TryFrom<PathBuf> for Benchmark {
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Solver {
     bin: PathBuf,
+}
+
+impl Solver {
+    #[cfg(test)]
+    fn new(bin: PathBuf) -> Self {
+        Solver { bin, }
+    }
 }
 
 impl fmt::Display for Solver {
@@ -188,7 +225,8 @@ impl Ui {
     }
 
     fn println(&self, m: impl std::fmt::Display) {
-        self.bar.println(m.to_string());
+        println!("{}", m);
+        // self.bar.println(m.to_string()); //TODO check me
     }
 
     fn progress(&self) {
@@ -242,15 +280,34 @@ pub trait Postprocessor {
         where W: io::Write;
 }
 
-pub fn main(post: impl Postprocessor + Sync) -> Result<()> {
-    let config = Arc::new(Opts::from_args().validate()?);
+pub fn main(post: impl Postprocessor + Sync) -> DynResult<()> {
+    main_with_opts(post, Opts::from_args())
+}
+
+fn set_thread_cnt(n: usize) -> DynResult<()> {
+
+    let r = rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .build_global();
+
+    if cfg!(test) {
+        // ignore error since tests are multithreaded
+        let _ = r;
+    } else {
+        // raise error in main method
+        r?;
+    }
+    Ok(())
+}
+
+fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> {
+    let config = Arc::new(opts.validate()?);
 
     println!("output dir: {}", config.opts.outdir.display());
     println!("cpus: {}", num_cpus::get_physical());
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus::get_physical())
-        .build_global()?;
+    set_thread_cnt(config.opts.num_threads 
+            .unwrap_or_else(||num_cpus::get_physical()))?;
 
     let (mut done, todo): (Vec<_>, Vec<_>) = {
         let bs = &config.benchmarks[..];

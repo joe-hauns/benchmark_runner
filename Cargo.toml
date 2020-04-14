@@ -12,3 +12,6 @@ itertools = "0.9"
 indicatif = {version = "0.14", features = ["with_rayon"]}
 rayon = "1.1"
 num_cpus = "1.12"
+tempfile = "3"
+quickcheck = "0.9"
+quickcheck_macros = "0.9"
