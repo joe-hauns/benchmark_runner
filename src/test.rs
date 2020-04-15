@@ -29,7 +29,7 @@ impl Postprocessor for TestPostpro {
         lock.push(r.clone());
         Ok(())
     }
-    fn write_results<W: io::Write>(self, _: W) -> DynResult<()> {
+    fn write_results(self, _: PostproIOAccess) -> DynResult<()> {
         let proc = self.proc.lock().unwrap();
         assert_eq!(self.benchmarks.len() * self.solvers.len(), proc.len());
         println!("{}", proc.len());

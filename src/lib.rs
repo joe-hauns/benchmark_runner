@@ -12,9 +12,9 @@ use structopt::*;
 type Result<A> = DynResult<A>;
 type DynResult<A> = std::result::Result<A, Box<dyn std::error::Error>>;
 
-macro_rules! warn {
-    ($fmt:expr $(,$x:tt)*) => {{ let _ = eprintln!($fmt $(,$x)*); }}
-}
+// macro_rules! warn {
+//     ($fmt:expr $(,$x:tt)*) => {{ let _ = eprintln!($fmt $(,$x)*); }}
+// }
 
 #[cfg(test)]
 mod test;
@@ -205,7 +205,7 @@ struct Config {
 }
 
 impl Config {
-    fn postpro_file(&self, post: &impl Postprocessor) -> io::Result<PathBuf> {
+    fn postpro_dir(&self, post: &impl Postprocessor) -> io::Result<PathBuf> {
         let dir = self.opts.outdir.join("post_proc");
         create_dir_all(&dir)?;
         Ok(dir.join(post.id()))
@@ -273,11 +273,24 @@ impl BenchmarkResult {
     }
 }
 
+pub struct PostproIOAccess(PathBuf);
+
+impl PostproIOAccess {
+    pub fn benchmark_out(&self, s: &Benchmark) -> io::Result<impl io::Write> {
+        File::create(self.0.join(s.file()))
+    }
+    pub fn solver_out(&self, s: &Solver) -> io::Result<impl io::Write> {
+        File::create(self.0.join(s.file()))
+    }
+    pub fn global_out(&self) -> io::Result<impl io::Write> {
+        File::create(self.0.join("summary"))
+    }
+}
+
 pub trait Postprocessor {
     fn process(&self, r: &BenchmarkResult) -> Result<()>;
     fn id(&self) -> &str;
-    fn write_results<W>(self, w: W) -> Result<()> 
-        where W: io::Write;
+    fn write_results(self, io: PostproIOAccess) -> Result<()>;
 }
 
 pub fn main(post: impl Postprocessor + Sync) -> DynResult<()> {
@@ -285,16 +298,15 @@ pub fn main(post: impl Postprocessor + Sync) -> DynResult<()> {
 }
 
 fn set_thread_cnt(n: usize) -> DynResult<()> {
-
     let r = rayon::ThreadPoolBuilder::new()
         .num_threads(n)
         .build_global();
 
     if cfg!(test) {
-        // ignore error since tests are multithreaded
+        /* ignore error since tests are multithreaded */
         let _ = r;
     } else {
-        // raise error in main method
+        /* raise error in main method */
         r?;
     }
     Ok(())
@@ -353,9 +365,10 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
         });
     }
 
-    let file = config.postpro_file(&post)?;
-    println!("writing to output file: {}", file.display());
-    post.write_results(File::create(file)?)?;
+    let dir = config.postpro_dir(&post)?;
+    fs::create_dir_all(&dir)?;
+    println!("writing to output dir: {}", dir.display());
+    post.write_results(PostproIOAccess(dir))?;
     Ok(())
 }
 
