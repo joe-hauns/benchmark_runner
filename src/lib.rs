@@ -208,7 +208,7 @@ impl Config {
     fn postpro_dir(&self, post: &impl Postprocessor) -> io::Result<PathBuf> {
         let dir = self.opts.outdir.join("post_proc");
         create_dir_all(&dir)?;
-        Ok(dir.join(post.id()))
+        Ok(dir.join(self.timeout.to_string()).join(post.id()))
     }
 }
 use indicatif::*;
