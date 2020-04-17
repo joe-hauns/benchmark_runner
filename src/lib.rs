@@ -219,12 +219,11 @@ struct Ui {
     timer: Arc<Mutex<Timer>>,
     prog: MultiProgress,
     bar: ProgressBar,
-    jobs: Vec<ProgressBar>,
 }
 
 struct Job {
     bar: ProgressBar,
-    guard: timer::Guard,
+    _guard: timer::Guard,
 }
 
 
@@ -239,7 +238,7 @@ impl Ui {
         let prog = MultiProgress::new();
         let bar = prog.add(ProgressBar::new(cnt as u64));
         bar.set_message(job);
-        Ui { bar, prog, config, timer: Arc::new(Mutex::new(Timer::new())), jobs: Vec::new() }
+        Ui { bar, prog, config, timer: Arc::new(Mutex::new(Timer::new())), }
     }
 
     fn println(&self, m: impl std::fmt::Display) {
@@ -258,7 +257,7 @@ impl Ui {
         bar.set_message(msg);
         let mut counter = 0;
         Job { 
-            guard: {
+            _guard: {
                 let bar = bar.clone();
                 self.timer.lock().unwrap()
                     .schedule_repeating(chrono::Duration::seconds(1), move || {
@@ -441,20 +440,18 @@ fn run(ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
             })*
             // ui.println(msg);
             fs::write(conf.cmd(), format!("{}\n", msg))?;
-            ui.add_job(&msg);
-            // println!();
+            let _ = ui.add_job(&msg);
             Command::new($bin)$(.arg($args))*
+                .stdout(File::create(conf.stdout())?)
+                .stderr(File::create(conf.stderr())?)
+                .output()?
         }}
     }
 
     let result = cmd!(
         &solver.bin,
         &benchmark.file,
-        format!("{}", conf.config.timeout)
-    )
-    .stdout(File::create(conf.stdout())?)
-    .stderr(File::create(conf.stderr())?)
-    .output()?;
+        format!("{}", conf.config.timeout));
 
     if result.status.success() {
         BenchmarkResult::from_file(conf.clone())
