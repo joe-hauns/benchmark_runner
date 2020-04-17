@@ -253,7 +253,11 @@ impl Ui {
     fn add_job(&self, msg: &str) -> Job {
         let timeout = self.config.timeout as _;
         let bar = self.prog.add(ProgressBar::new(timeout));
-        bar.set_style(ProgressStyle::default_bar().template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}"));
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
+                .progress_chars("##-")
+            );
         bar.set_message(msg);
         let mut counter = 0;
         Job { 
@@ -262,9 +266,13 @@ impl Ui {
                 self.timer.lock().unwrap()
                     .schedule_repeating(chrono::Duration::seconds(1), move || {
                     counter += 1;
-                    if counter > timeout {
-                        bar.set_style(ProgressStyle::default_bar().template("[{elapsed_precise}] {bar:40.red/red} {msg}"));
-                    } else {
+                    if counter == timeout {
+                        bar.set_style(
+                            ProgressStyle::default_bar()
+                                .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
+                                .progress_chars("##-")
+                            );
+                    } else if counter < timeout {
                         bar.inc(1);
                     }
 
