@@ -2,12 +2,12 @@ use itertools::*;
 use rayon::prelude::*;
 use std::ffi::*;
 use std::fmt;
-use std::fs::*;
 use std::fs;
+use std::fs::*;
 use std::io;
 use std::path::*;
 use std::process::*;
-use std::sync::Arc;
+use std::sync::*;
 use structopt::*;
 type Result<A> = DynResult<A>;
 type DynResult<A> = std::result::Result<A, Box<dyn std::error::Error>>;
@@ -15,6 +15,21 @@ type DynResult<A> = std::result::Result<A, Box<dyn std::error::Error>>;
 // macro_rules! warn {
 //     ($fmt:expr $(,$x:tt)*) => {{ let _ = eprintln!($fmt $(,$x)*); }}
 // }
+
+macro_rules! log_err {
+    ($e:expr $(, $fmt:tt)*) => {{ match $e {
+        Err(e) => {
+            eprint!($($fmt),*);
+            eprintln!(": {}", e);
+            Err(e)
+        },
+        Ok(x) => Ok(x),
+    } }}
+}
+
+macro_rules! log_err_ {
+    ($e:expr $(, $fmt:tt)+) => { { let _ = log_err!($e $(, $fmt)+); } }
+}
 
 #[cfg(test)]
 mod test;
@@ -34,7 +49,12 @@ struct Opts {
 
     /// Directory containing solvers. These solvers must be executables that will be invoked by
     /// $ <bin> <benchmark> <timeout_secs>
-    #[structopt(parse(from_os_str), short = "s", long = "solvers", default_value = "solvers")]
+    #[structopt(
+        parse(from_os_str),
+        short = "s",
+        long = "solvers",
+        default_value = "solvers"
+    )]
     solver_dir: PathBuf,
 
     /// timeout in seconds
@@ -56,7 +76,6 @@ struct Opts {
     /// How many threads shall be ran in parallel? Default: number of physical cpus
     #[structopt(short = "t", long = "threads")]
     num_threads: Option<usize>,
-
 }
 
 trait TryFrom<P> {
@@ -93,7 +112,7 @@ pub struct Benchmark {
 impl Benchmark {
     #[cfg(test)]
     fn new(file: PathBuf) -> Self {
-        Benchmark { file, }
+        Benchmark { file }
     }
 }
 
@@ -129,7 +148,7 @@ pub struct Solver {
 impl Solver {
     #[cfg(test)]
     fn new(bin: PathBuf) -> Self {
-        Solver { bin, }
+        Solver { bin }
     }
 }
 
@@ -190,18 +209,32 @@ impl BenchConf {
             remove_dir_all(&err_dir)?;
         }
         rename(&dir, &err_dir)?;
-        ui.println(format!("moving result to {} (may be deleted in another run)", err_dir.display()));
+        ui.println(format!(
+            "moving result to {} (may be deleted in another run)",
+            err_dir.display()
+        ));
         Ok(())
-
     }
 }
 
-#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+use derivative::*;
+
+#[derive(Derivative)]
+#[derivative(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct Config {
     solvers: Vec<Arc<Solver>>,
     benchmarks: Vec<Arc<Benchmark>>,
     opts: Opts,
     timeout: usize,
+    // #[derivative(PartialEq = "ignore")]
+    // #[derivative(Hash = "ignore")]
+    // #[derivative(Hash = "ignore")]
+    // #[derivative(Debug = "ignore")]
+    // #[derivative(Hash = "ignore")]
+    // #[derivative(Ord = "ignore")]
+    // #[derivative(PartialOrd = "ignore")]
+    // #[derivative(PartialEq = "ignore")]
+    // recv_term: spmc::Receiver<TermSignal>,
 }
 
 impl Config {
@@ -220,13 +253,17 @@ struct Ui {
 impl Ui {
     fn new(job: &str, cnt: usize) -> Self {
         let bar = ProgressBar::new(cnt as u64);
+        bar.set_style(ProgressStyle::default_bar()
+            .template("{spinner} [{elapsed_precise}] [{wide_bar:.green/fg}] {pos:>7}/{len:7} (left: {eta_precise})")
+            .progress_chars("=> "));
         bar.set_message(job);
+        bar.enable_steady_tick(100);
         Ui { bar }
     }
 
     fn println(&self, m: impl std::fmt::Display) {
-        println!("{}", m);
-        // self.bar.println(m.to_string()); //TODO check me
+        // println!("{}", m);
+        self.bar.println(m.to_string()); //TODO check me
     }
 
     fn progress(&self) {
@@ -273,6 +310,7 @@ impl BenchmarkResult {
     }
 }
 
+
 pub struct PostproIOAccess(PathBuf);
 
 impl PostproIOAccess {
@@ -312,14 +350,43 @@ fn set_thread_cnt(n: usize) -> DynResult<()> {
     Ok(())
 }
 
+use lazy_static::*;
+
+lazy_static! {
+    static ref TERMINATE: RwLock<bool> = RwLock::new(false);
+}
+
+fn shall_terminate() -> bool {
+    *TERMINATE.read().unwrap()
+}
+
+fn setup_ctrlc() {
+    log_err_!(
+        ctrlc::set_handler(move || {
+            println!("received termination signal");
+            eprintln!("received termination signal");
+            *TERMINATE.write().unwrap() = true;
+        }),
+        "failed to set up ctrl-c signal handling"
+    );
+}
+
 fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> {
+    setup_ctrlc();
     let config = Arc::new(opts.validate()?);
 
     println!("output dir: {}", config.opts.outdir.display());
     println!("cpus: {}", num_cpus::get_physical());
 
-    set_thread_cnt(config.opts.num_threads 
-            .unwrap_or_else(||num_cpus::get_physical()))?;
+    log_err_!(
+        set_thread_cnt(
+            config
+                .opts
+                .num_threads
+                .unwrap_or_else(|| num_cpus::get_physical())
+        ),
+        "failed to set number of threads"
+    );
 
     let (mut done, todo): (Vec<_>, Vec<_>) = {
         let bs = &config.benchmarks[..];
@@ -340,28 +407,34 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
     if !config.opts.only_post_process {
         let ui = Ui::new("Benchmarking", todo.len());
         done.par_extend(todo[..].par_iter().filter_map(|conf| {
-            let result = match run(&ui, &conf) {
-                Ok(x) => Some(x),
-                Err(e) => {
-                    ui.println(format!("failed to run {}: {}", conf, e));
-                    None
-                }
-            };
-            ui.progress();
-            result
+            if shall_terminate() {
+                None
+            } else {
+                let result = match run(&ui, &conf) {
+                    Ok(x) => Some(x),
+                    Err(e) => {
+                        ui.println(format!("failed to run {}: {}", conf, e));
+                        log_err_!(conf.remove_files(&ui), "failed to remove output files");
+                        None
+                    }
+                };
+                ui.progress();
+                result
+            }
         }));
     }
 
+    if shall_terminate() { return Ok(()); }
     {
         let ui = Ui::new("Postprocessing", done.len());
         done.into_par_iter().for_each(|x| match post.process(&x) {
             Ok(()) => (),
             Err(e) => {
                 ui.println(format!("failed to prostprocess: {}", e));
-                    if let Err(e) = x.run.remove_files(&ui) {
-                        ui.println(format!("failed to delete result: {}", e));
-                    }
-            },
+                if let Err(e) = x.run.remove_files(&ui) {
+                    ui.println(format!("failed to delete result: {}", e));
+                }
+            }
         });
     }
 
@@ -372,7 +445,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
     Ok(())
 }
 
-fn run(ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
+fn run(_ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
     let solver = &conf.solver;
     let benchmark = &conf.benchmark;
     let dir = conf.outdir();
@@ -395,10 +468,13 @@ fn run(ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
                     None => msg.push_str(" ???"),
                 }
             })*
-            // ui.println(msg);
             fs::write(conf.cmd(), format!("{}\n", msg))?;
-            // println!();
-            Command::new($bin)$(.arg($args))*
+
+            let mut cmd = Command::new($bin);
+            $(cmd.arg($args);)*
+            cmd.stdout(File::create(conf.stdout())?);
+            cmd.stderr(File::create(conf.stderr())?);
+            cmd.output()
         }}
     }
 
@@ -406,20 +482,12 @@ fn run(ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
         &solver.bin,
         &benchmark.file,
         format!("{}", conf.config.timeout)
-    )
-    .stdout(File::create(conf.stdout())?)
-    .stderr(File::create(conf.stderr())?)
-    .output()?;
+    )?;
 
     if result.status.success() {
         BenchmarkResult::from_file(conf.clone())
     } else {
-        conf.remove_files(ui)?;
-        let msg = format!(
-            "unexpected exit status (code: {:?})",
-            result.status.code(),
-        );
+        let msg = format!("unexpected exit status (code: {:?})", result.status.code(),);
         Err(io::Error::new(io::ErrorKind::Other, msg))?
-
     }
 }
