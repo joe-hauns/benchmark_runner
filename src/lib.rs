@@ -236,7 +236,8 @@ impl Drop for Job {
 impl Ui {
     fn new(job: &str, cnt: usize, config: Arc<Config>) -> Self {
         let prog = MultiProgress::new();
-        let bar = prog.add(ProgressBar::new(cnt as u64));
+        let bar = prog.add(ProgressBar::new(cnt as u64)
+            .with_style(ProgressStyle::default_bar()));
         bar.set_message(job);
         Ui { bar, prog, config, timer: Arc::new(Mutex::new(Timer::new())), }
     }
