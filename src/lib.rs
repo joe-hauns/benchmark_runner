@@ -287,6 +287,15 @@ impl Ui {
     }
 }
 
+impl Drop for Ui {
+    fn drop(&mut self) {
+        self.bar.finish();
+        if let Err(e) = self.prog.join_and_clear() {
+            eprintln!("failed to join multiprogress: {}", e);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct BenchmarkResult {
     run: BenchConf,
