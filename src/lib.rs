@@ -235,8 +235,8 @@ impl Drop for Job {
 
 impl Ui {
     fn new(job: &str, cnt: usize, config: Arc<Config>) -> Self {
-        let prog = MultiProgress::new();
-        let bar = prog.add(ProgressBar::new(cnt as u64));
+        let prog = MultiProgress::with_draw_target(ProgressDrawTarget::stdout_with_hz(1));
+        let bar = prog.add(ProgressBar::new(cnt as u64)) ;
         bar.set_style(ProgressStyle::default_bar()
             .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
             .progress_chars("##-"));
@@ -253,37 +253,37 @@ impl Ui {
         self.bar.inc(1);
     }
 
-    fn add_job(&self, msg: &str) -> () {
-        // let timeout = self.config.timeout as _;
-        // let bar = self.prog.add(ProgressBar::new(timeout));
-        // bar.set_style(
-        //     ProgressStyle::default_bar()
-        //         .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
-        //         .progress_chars("##-")
-        //     );
-        // bar.set_message(msg);
-        // let mut counter = 0;
-        // Job { 
-        //     _guard: {
-        //         let bar = bar.clone();
-        //         self.timer.lock().unwrap()
-        //             .schedule_repeating(chrono::Duration::seconds(1), move || {
-        //             counter += 1;
-        //             if counter == timeout {
-        //                 bar.set_style(
-        //                     ProgressStyle::default_bar()
-        //                         .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
-        //                         .progress_chars("##-")
-        //                     );
-        //             } else if counter < timeout {
-        //                 bar.inc(1);
-        //             }
-        //
-        //
-        //         }) 
-        //     },
-        //     bar,
-        // }
+    fn add_job(&self, msg: &str) -> Job {
+        let timeout = self.config.timeout as _;
+        let bar = self.prog.add(ProgressBar::new(timeout));
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
+                .progress_chars("##-")
+            );
+        bar.set_message(msg);
+        let mut counter = 0;
+        Job { 
+            _guard: {
+                let bar = bar.clone();
+                self.timer.lock().unwrap()
+                    .schedule_repeating(chrono::Duration::seconds(1), move || {
+                    counter += 1;
+                    if counter == timeout {
+                        bar.set_style(
+                            ProgressStyle::default_bar()
+                                .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
+                                .progress_chars("##-")
+                            );
+                    } else if counter < timeout {
+                        bar.inc(1);
+                    }
+
+
+                }) 
+            },
+            bar,
+        }
     }
 }
 
