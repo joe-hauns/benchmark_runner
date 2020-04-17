@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::*;
 use std::process::*;
-use std::sync::Arc;
+use std::sync::*;
 use structopt::*;
 type Result<A> = DynResult<A>;
 type DynResult<A> = std::result::Result<A, Box<dyn std::error::Error>>;
@@ -212,16 +212,34 @@ impl Config {
     }
 }
 use indicatif::*;
+use timer::Timer;
 
 struct Ui {
+    config: Arc<Config>,
+    timer: Arc<Mutex<Timer>>,
+    prog: MultiProgress,
     bar: ProgressBar,
+    jobs: Vec<ProgressBar>,
+}
+
+struct Job {
+    bar: ProgressBar,
+    guard: timer::Guard,
+}
+
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        self.bar.finish();
+    }
 }
 
 impl Ui {
-    fn new(job: &str, cnt: usize) -> Self {
-        let bar = ProgressBar::new(cnt as u64);
+    fn new(job: &str, cnt: usize, config: Arc<Config>) -> Self {
+        let prog = MultiProgress::new();
+        let bar = prog.add(ProgressBar::new(cnt as u64));
         bar.set_message(job);
-        Ui { bar }
+        Ui { bar, prog, config, timer: Arc::new(Mutex::new(Timer::new())), jobs: Vec::new() }
     }
 
     fn println(&self, m: impl std::fmt::Display) {
@@ -231,6 +249,31 @@ impl Ui {
 
     fn progress(&self) {
         self.bar.inc(1);
+    }
+
+    fn add_job(&self, msg: &str) -> Job {
+        let timeout = self.config.timeout as _;
+        let bar = self.prog.add(ProgressBar::new(timeout));
+        bar.set_style(ProgressStyle::default_bar().template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}"));
+        bar.set_message(msg);
+        let mut counter = 0;
+        Job { 
+            guard: {
+                let bar = bar.clone();
+                self.timer.lock().unwrap()
+                    .schedule_repeating(chrono::Duration::seconds(1), move || {
+                    counter += 1;
+                    if counter > timeout {
+                        bar.set_style(ProgressStyle::default_bar().template("[{elapsed_precise}] {bar:40.red/red} {msg}"));
+                    } else {
+                        bar.inc(1);
+                    }
+
+
+                }) 
+            },
+            bar,
+        }
     }
 }
 
@@ -338,7 +381,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
     };
 
     if !config.opts.only_post_process {
-        let ui = Ui::new("Benchmarking", todo.len());
+        let ui = Ui::new("Benchmarking", todo.len(), config.clone());
         done.par_extend(todo[..].par_iter().filter_map(|conf| {
             let result = match run(&ui, &conf) {
                 Ok(x) => Some(x),
@@ -353,7 +396,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
     }
 
     {
-        let ui = Ui::new("Postprocessing", done.len());
+        let ui = Ui::new("Postprocessing", done.len(), config.clone());
         done.into_par_iter().for_each(|x| match post.process(&x) {
             Ok(()) => (),
             Err(e) => {
@@ -361,6 +404,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
                     if let Err(e) = x.run.remove_files(&ui) {
                         ui.println(format!("failed to delete result: {}", e));
                     }
+                    ui.progress();
             },
         });
     }
@@ -397,6 +441,7 @@ fn run(ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
             })*
             // ui.println(msg);
             fs::write(conf.cmd(), format!("{}\n", msg))?;
+            ui.add_job(&msg);
             // println!();
             Command::new($bin)$(.arg($args))*
         }}
