@@ -460,11 +460,13 @@ fn run(ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
             })*
             // ui.println(msg);
             fs::write(conf.cmd(), format!("{}\n", msg))?;
-            let _ = ui.add_job(&msg);
-            Command::new($bin)$(.arg($args))*
+            let job = ui.add_job(&msg);
+            let out = Command::new($bin)$(.arg($args))*
                 .stdout(File::create(conf.stdout())?)
                 .stderr(File::create(conf.stderr())?)
-                .output()?
+                .output()?;
+            drop(job);
+            out
         }}
     }
 
