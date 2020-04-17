@@ -253,7 +253,7 @@ impl Ui {
         self.bar.inc(1);
     }
 
-    fn add_job(&self, msg: &str) -> Job {
+    fn add_job(&self, msg: &str) -> () {
         // let timeout = self.config.timeout as _;
         // let bar = self.prog.add(ProgressBar::new(timeout));
         // bar.set_style(
