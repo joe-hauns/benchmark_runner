@@ -7,6 +7,7 @@ use std::fs::*;
 use std::io;
 use std::path::*;
 use std::process::*;
+use std::sync::mpsc::*;
 use std::sync::*;
 use structopt::*;
 type Result<A> = DynResult<A>;
@@ -310,7 +311,6 @@ impl BenchmarkResult {
     }
 }
 
-
 pub struct PostproIOAccess(PathBuf);
 
 impl PostproIOAccess {
@@ -350,14 +350,23 @@ fn set_thread_cnt(n: usize) -> DynResult<()> {
     Ok(())
 }
 
+struct TermSignal;
+
 use lazy_static::*;
 
 lazy_static! {
     static ref TERMINATE: RwLock<bool> = RwLock::new(false);
+    static ref TERM_SEND: Mutex<Option<Vec<Sender<TermSignal>>>> = Mutex::new(Some(Vec::new()));
 }
 
 fn shall_terminate() -> bool {
     *TERMINATE.read().unwrap()
+}
+
+fn term_receiver() -> Receiver<TermSignal> {
+    let (tx, rx) = channel();
+    unimplemented!(); // TODO
+    rx
 }
 
 fn setup_ctrlc() {
@@ -366,6 +375,10 @@ fn setup_ctrlc() {
             println!("received termination signal");
             eprintln!("received termination signal");
             *TERMINATE.write().unwrap() = true;
+            let snds = TERM_SEND.lock().unwrap().take().unwrap();
+            for snd in snds {
+                log_err_!(snd.send(TermSignal), "failed to send termination signal");
+            }
         }),
         "failed to set up ctrl-c signal handling"
     );
@@ -424,17 +437,23 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
         }));
     }
 
-    if shall_terminate() { return Ok(()); }
+    if shall_terminate() {
+        return Ok(());
+    }
     {
         let ui = Ui::new("Postprocessing", done.len());
-        done.into_par_iter().for_each(|x| match post.process(&x) {
-            Ok(()) => (),
-            Err(e) => {
-                ui.println(format!("failed to prostprocess: {}", e));
-                if let Err(e) = x.run.remove_files(&ui) {
-                    ui.println(format!("failed to delete result: {}", e));
+        done.into_par_iter().for_each(|x| {
+            let res = match post.process(&x) {
+                Ok(()) => (),
+                Err(e) => {
+                    ui.println(format!("failed to prostprocess: {}", e));
+                    if let Err(e) = x.run.remove_files(&ui) {
+                        ui.println(format!("failed to delete result: {}", e));
+                    }
                 }
-            }
+            };
+            ui.progress();
+            res
         });
     }
 
