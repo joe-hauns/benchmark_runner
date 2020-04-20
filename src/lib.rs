@@ -273,6 +273,18 @@ impl Ui {
 }
 
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub struct BenchmarkConfig<'a>(&'a Config);
+
+impl<'a> BenchmarkConfig<'a> {
+    pub fn solvers(&self) -> &[Arc<Solver>] {
+        &self.0.solvers
+    }
+    pub fn benchmarks(&self) -> &[Arc<Benchmark>] {
+        &self.0.benchmarks
+    }
+}
+
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct BenchmarkResult {
     run: BenchConf,
 }
@@ -290,6 +302,10 @@ impl BenchmarkResult {
 
     pub fn stderr(&self) -> io::Result<impl io::Read> {
         File::open(self.run.stderr())
+    }
+
+    pub fn config<'a>(&'a self) -> BenchmarkConfig<'a> {
+        BenchmarkConfig(&self.run.config)
     }
 }
 
@@ -328,7 +344,7 @@ impl PostproIOAccess {
 pub trait Postprocessor {
     fn process(&self, r: &BenchmarkResult) -> Result<()>;
     fn id(&self) -> &str;
-    fn write_results(self, io: PostproIOAccess) -> Result<()>;
+    fn write_results(self, conf: BenchmarkConfig, io: PostproIOAccess) -> Result<()>;
 }
 
 pub fn main(post: impl Postprocessor + Sync) -> DynResult<()> {
@@ -385,6 +401,14 @@ fn setup_ctrlc() {
 }
 
 fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> {
+    macro_rules! handle_term_signal {
+        ($x:expr) => {
+            match $x {
+                Ok(x) => x,
+                Err(TermSignal) => return Ok(()),
+            }
+        }
+    }
     setup_ctrlc();
     let config = Arc::new(opts.validate()?);
 
@@ -437,12 +461,11 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
         }));
     }
 
-    if shall_terminate() {
-        return Ok(());
-    }
+    if shall_terminate() { return Ok(()); }
+
     {
         let ui = Ui::new("Postprocessing", done.len());
-        done.into_par_iter().for_each(|x| {
+        handle_term_signal!(done.into_par_iter().try_for_each(|x| {
             let res = match post.process(&x) {
                 Ok(()) => (),
                 Err(e) => {
@@ -453,14 +476,20 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
                 }
             };
             ui.progress();
-            res
-        });
+            if shall_terminate() {
+                Err(TermSignal)
+            } else {
+                Ok(res)
+            }
+        }));
     }
+
+    if shall_terminate() { return Ok(()); }
 
     let dir = config.postpro_dir(&post)?;
     fs::create_dir_all(&dir)?;
     println!("writing to output dir: {}", dir.display());
-    post.write_results(PostproIOAccess(dir))?;
+    post.write_results(BenchmarkConfig(&config), PostproIOAccess(dir))?;
     Ok(())
 }
 

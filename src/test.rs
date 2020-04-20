@@ -29,7 +29,7 @@ impl Postprocessor for TestPostpro {
         lock.push(r.clone());
         Ok(())
     }
-    fn write_results(self, _: PostproIOAccess) -> DynResult<()> {
+    fn write_results(self, conf: BenchmarkConfig, _: PostproIOAccess) -> DynResult<()> {
         let proc = self.proc.lock().unwrap();
         assert_eq!(self.benchmarks.len() * self.solvers.len(), proc.len());
         println!("{}", proc.len());
@@ -38,6 +38,8 @@ impl Postprocessor for TestPostpro {
                 assert!(proc.iter().any(|r| r.benchmark() == b && r.solver() == s), "b: {}\ns:{}\nproc: {:#?}",s, b, proc);
             }
         }
+        assert_eq!(self.benchmarks.len(), conf.benchmarks().len());
+        assert_eq!(self.solvers.len(), conf.solvers().len());
         Ok(())
     }
 }
