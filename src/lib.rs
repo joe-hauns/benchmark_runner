@@ -1,3 +1,6 @@
+use async_trait::*;
+use futures::prelude::*;
+use futures::*;
 use itertools::*;
 use rayon::prelude::*;
 use std::ffi::*;
@@ -5,6 +8,8 @@ use std::fmt;
 use std::fs;
 use std::fs::*;
 use std::io;
+use async_std::io as async_io;
+use async_std::fs as async_fs;
 use std::path::*;
 use std::process::*;
 use std::sync::mpsc::*;
@@ -255,7 +260,7 @@ impl Ui {
     fn new(job: &str, cnt: usize) -> Self {
         let bar = ProgressBar::new(cnt as u64);
         bar.set_style(ProgressStyle::default_bar()
-            .template("{spinner} [{elapsed_precise}] [{wide_bar:.green/fg}] {pos:>7}/{len:7} (left: {eta_precise})")
+            .template("{spinner} {msg} [{elapsed_precise}] [{wide_bar:.green/fg}] {pos:>7}/{len:7} (left: {eta_precise})")
             .progress_chars("=> "));
         bar.set_message(job);
         bar.enable_steady_tick(100);
@@ -269,6 +274,12 @@ impl Ui {
 
     fn progress(&self) {
         self.bar.inc(1);
+    }
+}
+
+impl Drop for Ui {
+    fn drop(&mut self) {
+        self.bar.finish();
     }
 }
 
@@ -296,17 +307,19 @@ impl BenchmarkResult {
     pub fn solver(&self) -> &Solver {
         &self.run.solver
     }
-    pub fn stdout(&self) -> io::Result<impl io::Read> {
-        File::open(self.run.stdout())
+
+    pub async fn stdout(&self) -> async_io::Result<impl async_io::Read> {
+        async_fs::File::open(self.run.stdout()).await
     }
 
-    pub fn stderr(&self) -> io::Result<impl io::Read> {
-        File::open(self.run.stderr())
+    pub async fn stderr(&self) -> io::Result<impl async_io::Read> {
+        async_fs::File::open(self.run.stderr()).await
     }
 
     pub fn config<'a>(&'a self) -> BenchmarkConfig<'a> {
         BenchmarkConfig(&self.run.config)
     }
+
 }
 
 impl BenchmarkResult {
@@ -341,8 +354,9 @@ impl PostproIOAccess {
     }
 }
 
+#[async_trait]
 pub trait Postprocessor {
-    fn process(&self, r: &BenchmarkResult) -> Result<()>;
+    async fn process(&self, r: &BenchmarkResult) -> Result<()>;
     fn id(&self) -> &str;
     fn write_results(self, conf: BenchmarkConfig, io: PostproIOAccess) -> Result<()>;
 }
@@ -379,6 +393,7 @@ fn shall_terminate() -> bool {
     *TERMINATE.read().unwrap()
 }
 
+#[allow(unused)]
 fn term_receiver() -> Receiver<TermSignal> {
     let (tx, rx) = channel();
     unimplemented!(); // TODO
@@ -391,9 +406,12 @@ fn setup_ctrlc() {
             println!("received termination signal");
             eprintln!("received termination signal");
             *TERMINATE.write().unwrap() = true;
-            let snds = TERM_SEND.lock().unwrap().take().unwrap();
-            for snd in snds {
-                log_err_!(snd.send(TermSignal), "failed to send termination signal");
+            if let Some(snds) = TERM_SEND.lock().unwrap().take() {
+                for snd in snds {
+                    log_err_!(snd.send(TermSignal), "failed to send termination signal");
+                }
+            } else {
+                eprintln!("termination signal was already sent");
             }
         }),
         "failed to set up ctrl-c signal handling"
@@ -407,7 +425,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
                 Ok(x) => x,
                 Err(TermSignal) => return Ok(()),
             }
-        }
+        };
     }
     setup_ctrlc();
     let config = Arc::new(opts.validate()?);
@@ -461,30 +479,41 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
         }));
     }
 
-    if shall_terminate() { return Ok(()); }
+    if shall_terminate() {
+        return Ok(());
+    }
 
     {
         let ui = Ui::new("Postprocessing", done.len());
-        handle_term_signal!(done.into_par_iter().try_for_each(|x| {
-            let res = match post.process(&x) {
-                Ok(()) => (),
-                Err(e) => {
-                    ui.println(format!("failed to prostprocess: {}", e));
-                    if let Err(e) = x.run.remove_files(&ui) {
-                        ui.println(format!("failed to delete result: {}", e));
+
+        let done = stream::iter(done.into_iter().map(Ok));
+
+        // TODO: multithreaded instead of block_on
+        handle_term_signal!(executor::block_on(
+            done.try_for_each_concurrent(/* concurrency */ 32, |x| async {
+                let x = x;
+                let res = match post.process(&x).await {
+                    Ok(()) => (),
+                    Err(e) => {
+                        ui.println(format!("failed to prostprocess: {}", e));
+                        if let Err(e) = x.run.remove_files(&ui) {
+                            ui.println(format!("failed to delete result: {}", e));
+                        }
                     }
+                };
+                ui.progress();
+                if shall_terminate() {
+                    Err(TermSignal)
+                } else {
+                    Ok(res)
                 }
-            };
-            ui.progress();
-            if shall_terminate() {
-                Err(TermSignal)
-            } else {
-                Ok(res)
-            }
-        }));
+            })
+        ));
     }
 
-    if shall_terminate() { return Ok(()); }
+    if shall_terminate() {
+        return Ok(());
+    }
 
     let dir = config.postpro_dir(&post)?;
     fs::create_dir_all(&dir)?;

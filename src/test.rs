@@ -22,13 +22,16 @@ impl TestPostpro {
     }
 }
 
+#[async_trait]
 impl Postprocessor for TestPostpro {
     fn id(&self) -> &str { "test_postpro" }
-    fn process(&self, r: &BenchmarkResult) -> DynResult<()> {
+
+    async fn process(&self, r: &BenchmarkResult) -> DynResult<()> {
         let mut lock = self.proc.lock().unwrap();
         lock.push(r.clone());
         Ok(())
     }
+
     fn write_results(self, conf: BenchmarkConfig, _: PostproIOAccess) -> DynResult<()> {
         let proc = self.proc.lock().unwrap();
         assert_eq!(self.benchmarks.len() * self.solvers.len(), proc.len());
@@ -43,9 +46,6 @@ impl Postprocessor for TestPostpro {
         Ok(())
     }
 }
-
-
-
 
 #[test]
 fn test_all_ran() {
