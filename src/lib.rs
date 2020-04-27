@@ -18,10 +18,6 @@ use structopt::*;
 type Result<A> = DynResult<A>;
 type DynResult<A> = std::result::Result<A, Box<dyn std::error::Error>>;
 
-// macro_rules! warn {
-//     ($fmt:expr $(,$x:tt)*) => {{ let _ = eprintln!($fmt $(,$x)*); }}
-// }
-
 macro_rules! log_err {
     ($e:expr $(, $fmt:tt)*) => {{ match $e {
         Err(e) => {
@@ -208,7 +204,7 @@ impl BenchConf {
         self.outdir().join("stderr")
     }
 
-    fn remove_files(&self, ui: &Ui) -> Result<()> {
+    fn remove_files(&self, ui: &Ui, reason: impl fmt::Display) -> Result<()> {
         let dir = self.outdir();
         let err_dir = dir.with_extension("err");
         if err_dir.exists() {
@@ -216,9 +212,11 @@ impl BenchConf {
         }
         rename(&dir, &err_dir)?;
         ui.println(format!(
-            "moving result to {} (may be deleted in another run)",
+            "{}: moving result to {} (may be deleted in another run)",
+            reason,
             err_dir.display()
         ));
+        fs::write(err_dir.join("reason.txt"), reason.to_string())?;
         Ok(())
     }
 }
@@ -307,6 +305,15 @@ impl BenchmarkResult {
     pub fn solver(&self) -> &Solver {
         &self.run.solver
     }
+
+    pub fn stdout_sync(&self) -> io::Result<impl io::Read> {
+        fs::File::open(self.run.stdout())
+    }
+
+    pub fn stderr_sync(&self) -> io::Result<impl io::Read> {
+        fs::File::open(self.run.stderr())
+    }
+
 
     pub async fn stdout(&self) -> async_io::Result<impl async_io::Read> {
         async_fs::File::open(self.run.stdout()).await
@@ -468,8 +475,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
                 let result = match run(&ui, &conf) {
                     Ok(x) => Some(x),
                     Err(e) => {
-                        ui.println(format!("failed to run {}: {}", conf, e));
-                        log_err_!(conf.remove_files(&ui), "failed to remove output files");
+                        log_err_!(conf.remove_files(&ui, format!("failed to run {}: {}", conf, e)), "failed to remove output files");
                         None
                     }
                 };
@@ -495,8 +501,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
                 let res = match post.process(&x).await {
                     Ok(()) => (),
                     Err(e) => {
-                        ui.println(format!("failed to prostprocess: {}", e));
-                        if let Err(e) = x.run.remove_files(&ui) {
+                        if let Err(e) = x.run.remove_files(&ui, format!("failed to prostprocess: {}", e)) {
                             ui.println(format!("failed to delete result: {}", e));
                         }
                     }
