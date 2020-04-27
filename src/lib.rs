@@ -252,12 +252,12 @@ impl Config {
 }
 use indicatif::*;
 
-struct Ui {
+pub struct Ui {
     bar: ProgressBar,
 }
 
 impl Ui {
-    fn new(job: &str, cnt: usize) -> Self {
+    pub fn new(job: &str, cnt: usize) -> Self {
         let bar = ProgressBar::new(cnt as u64);
         bar.set_style(ProgressStyle::default_bar()
             .template("{spinner} {msg} [{elapsed_precise}] [{wide_bar:.green/fg}] {pos:>7}/{len:7} (left: {eta_precise})")
@@ -267,12 +267,12 @@ impl Ui {
         Ui { bar }
     }
 
-    fn println(&self, m: impl std::fmt::Display) {
+    pub fn println(&self, m: impl std::fmt::Display) {
         // println!("{}", m);
         self.bar.println(m.to_string()); //TODO check me
     }
 
-    fn progress(&self) {
+    pub fn progress(&self) {
         self.bar.inc(1);
     }
 }
