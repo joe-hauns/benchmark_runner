@@ -22,7 +22,7 @@ impl TestPostpro {
 impl Postprocessor for TestPostpro {
     type Mapped = BenchmarkResult;
     type Reduced = Vec<BenchmarkResult>;
-    fn id(&self) -> &str { "test_postpro" }
+    // fn id(&self) -> &str { "test_postpro" }
 
     fn map(&self, r: &BenchmarkResult) -> Result<BenchmarkResult> {
         Ok(r.clone())

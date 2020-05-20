@@ -32,8 +32,21 @@ macro_rules! log_err_ {
 mod test;
 
 #[derive(StructOpt, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-#[structopt(name = "example", about = "An example of StructOpt usage.")]
+/// A simple benchmark running tool.
+///
+/// Gets a set of solvers and a set of benchmarks as inputs and runs each solver on each benchmark.
+/// Each solver will be invoked as its own process using
+///
+/// $ <solver> <benchmark> <timeout>
+///
+/// stdout, and stderr of the process will be captured and written to the output directory.
+///
+/// The solver shall indicate success with a return value of zero and failure with a non-zero
+/// return value. If the solver returns non-zero its stdout, and stderr will be moved to a
+/// the output directory in a subdirectory suffixed by `.err`. These *.err directories may be 
+/// deleted whe the benchmark runner is invoked with the same output directory again.
 struct Opts {
+
     /// directory that must containn must contain poroblem instance files, that will be passed to
     /// the solver as first argument.
     #[structopt(
@@ -44,8 +57,7 @@ struct Opts {
     )]
     bench_dir: PathBuf,
 
-    /// Directory containing solvers. These solvers must be executables that will be invoked by
-    /// $ <bin> <benchmark> <timeout_secs>
+    /// Directory containing solvers. 
     #[structopt(
         parse(from_os_str),
         short = "s",
@@ -57,7 +69,7 @@ struct Opts {
     /// timeout in seconds
     timeout: usize,
 
-    /// directory where the outputs of the runs shall be written to
+    /// directory to which the outputs written 
     #[structopt(
         parse(from_os_str),
         short = "o",
@@ -70,7 +82,7 @@ struct Opts {
     #[structopt(short = "p", long = "post")]
     only_post_process: bool,
 
-    /// How many threads shall be ran in parallel? Default: number of physical cpus
+    /// How many threads shall be ran in parallel? [default: number of physical cpus]
     #[structopt(short = "t", long = "threads")]
     num_threads: Option<usize>,
 }
@@ -241,10 +253,10 @@ struct Config {
 }
 
 impl Config {
-    fn postpro_dir(&self, post: &impl Postprocessor) -> io::Result<PathBuf> {
-        let dir = self.opts.outdir.join("post_proc");
+    fn postpro_dir(&self) -> io::Result<PathBuf> {
+        let dir = self.opts.outdir.join("timeout").join("post_proc");
         create_dir_all(&dir)?;
-        Ok(dir.join(self.timeout.to_string()).join(post.id()))
+        Ok(dir)
     }
 }
 use indicatif::*;
@@ -305,12 +317,12 @@ impl BenchmarkResult {
         &self.run.solver
     }
 
-    pub fn stdout(&self) -> io::Result<impl io::Read> {
-        fs::File::open(self.run.stdout())
+    pub fn stdout(&self) -> Result<impl io::Read + Send> {
+        Ok(fs::File::open(self.run.stdout())?)
     }
 
-    pub fn stderr(&self) -> io::Result<impl io::Read> {
-        fs::File::open(self.run.stderr())
+    pub fn stderr(&self) -> Result<impl io::Read + Send> {
+        Ok(fs::File::open(self.run.stderr())?)
     }
 
 
@@ -357,7 +369,6 @@ pub trait Postprocessor {
     type Reduced;
     fn map(&self, r: &BenchmarkResult) -> Result<Self::Mapped>;
     fn reduce(&self, iter: impl IntoIterator<Item=Self::Mapped>) -> Result<Self::Reduced>;
-    fn id(&self) -> &str;
     fn write_reduced(&self, results: Self::Reduced, conf: BenchmarkConfig, io: PostproIOAccess) -> Result<()>;
 }
 
@@ -519,7 +530,7 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
         return Ok(());
     }
 
-    let dir = config.postpro_dir(&post)?;
+    let dir = config.postpro_dir()?;
     fs::create_dir_all(&dir)?;
     println!("writing to output dir: {}", dir.display());
     post.write_reduced(reduced, BenchmarkConfig(&config), PostproIOAccess(dir))?;
