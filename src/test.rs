@@ -20,7 +20,7 @@ impl TestPostpro {
 }
 
 impl Postprocessor for TestPostpro {
-    type Processed = BenchmarkResult;
+    type Mapped = BenchmarkResult;
     type Reduced = Vec<BenchmarkResult>;
     fn id(&self) -> &str { "test_postpro" }
 
@@ -28,7 +28,7 @@ impl Postprocessor for TestPostpro {
         Ok(r.clone())
     }
 
-    fn reduce(&self, iter: impl IntoIterator<Item=Self::Processed>) -> Result<Self::Reduced> {
+    fn reduce(&self, iter: impl IntoIterator<Item=Self::Mapped>) -> Result<Self::Reduced> {
         Ok(iter.into_iter().collect())
     }
 
@@ -50,17 +50,21 @@ impl Postprocessor for TestPostpro {
 
 #[test]
 fn test_all_ran() {
+    println!("one");
     assert!(prop(
             vec![0,1,2].into_iter().collect(), 
             vec![].into_iter().collect()));
 
+    println!("two");
     assert!(prop(
             vec![].into_iter().collect(), 
             vec![173, 73, 73].into_iter().collect()));
 
+    println!("three");
     assert!(prop(
             vec![0,1,2].into_iter().collect(), 
             vec![173, 73, 73].into_iter().collect()));
+    println!("end");
 
 }
 

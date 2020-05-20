@@ -353,10 +353,10 @@ impl PostproIOAccess {
 }
 
 pub trait Postprocessor {
-    type Processed: Send + Sync;
+    type Mapped: Send + Sync;
     type Reduced;
-    fn map(&self, r: &BenchmarkResult) -> Result<Self::Processed>;
-    fn reduce(&self, iter: impl IntoIterator<Item=Self::Processed>) -> Result<Self::Reduced>;
+    fn map(&self, r: &BenchmarkResult) -> Result<Self::Mapped>;
+    fn reduce(&self, iter: impl IntoIterator<Item=Self::Mapped>) -> Result<Self::Reduced>;
     fn id(&self) -> &str;
     fn write_reduced(&self, results: Self::Reduced, conf: BenchmarkConfig, io: PostproIOAccess) -> Result<()>;
 }
@@ -486,7 +486,7 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
         return Ok(());
     }
 
-    let mapped: Vec<P::Processed> = {
+    let mapped: Vec<P::Mapped> = {
         let ui = Ui::new("Mapping", done.len());
 
         handle_term_signal!(
