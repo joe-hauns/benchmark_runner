@@ -1,6 +1,4 @@
-use async_trait::*;
-use futures::prelude::*;
-use futures::*;
+// TODO use anyhow
 use itertools::*;
 use rayon::prelude::*;
 use std::ffi::*;
@@ -8,15 +6,12 @@ use std::fmt;
 use std::fs;
 use std::fs::*;
 use std::io;
-use async_std::io as async_io;
-use async_std::fs as async_fs;
 use std::path::*;
 use std::process::*;
 use std::sync::mpsc::*;
 use std::sync::*;
 use structopt::*;
-type Result<A> = DynResult<A>;
-type DynResult<A> = std::result::Result<A, Box<dyn std::error::Error>>;
+use anyhow::*;
 
 macro_rules! log_err {
     ($e:expr $(, $fmt:tt)*) => {{ match $e {
@@ -81,22 +76,23 @@ struct Opts {
 }
 
 trait TryFrom<P> {
-    fn try_from(p: P) -> io::Result<Self>
+    fn try_from(p: P) -> Result<Self>
     where
         Self: Sized;
 }
 
 impl Opts {
-    fn lines_to_files<A>(d: &PathBuf) -> io::Result<Vec<Arc<A>>>
+    fn lines_to_files<A>(d: &PathBuf) -> Result<Vec<Arc<A>>>
     where
         A: TryFrom<PathBuf>,
     {
-        read_dir(d)?
+        read_dir(d).with_context(||format!("failed to open directory: {}", d.display()))?
             .map_results(|e| e.path())
             .map_results(|e| A::try_from(e).map(Arc::new))
-            .collect::<io::Result<_>>()?
+            .collect::<Result<_, _>>()
+            .with_context(||format!("failed to read directory: {}", d.display()))?
     }
-    fn validate(self) -> io::Result<Config> {
+    fn validate(self) -> Result<Config> {
         Ok(Config {
             solvers: Self::lines_to_files(&self.solver_dir)?,
             benchmarks: Self::lines_to_files(&self.bench_dir)?,
@@ -137,7 +133,7 @@ impl Benchmark {
 }
 
 impl TryFrom<PathBuf> for Benchmark {
-    fn try_from(file: PathBuf) -> io::Result<Self> {
+    fn try_from(file: PathBuf) -> Result<Self> {
         Ok(Benchmark { file })
     }
 }
@@ -167,7 +163,7 @@ impl Solver {
 }
 
 impl TryFrom<PathBuf> for Solver {
-    fn try_from(bin: PathBuf) -> io::Result<Self> {
+    fn try_from(bin: PathBuf) -> Result<Self> {
         Ok(Solver { bin })
     }
 }
@@ -208,15 +204,18 @@ impl BenchConf {
         let dir = self.outdir();
         let err_dir = dir.with_extension("err");
         if err_dir.exists() {
-            remove_dir_all(&err_dir)?;
+            remove_dir_all(&err_dir)
+                .with_context(||format!("failed to remove directory: {}", err_dir.display()))?;
         }
-        rename(&dir, &err_dir)?;
+        rename(&dir, &err_dir).with_context(||format!("failed move dir {} -> {}", dir.display(), err_dir.display()))?;
         ui.println(format!(
             "{}: moving result to {} (may be deleted in another run)",
             reason,
             err_dir.display()
         ));
-        fs::write(err_dir.join("reason.txt"), reason.to_string())?;
+        let reasons = err_dir.join("reason.txt");
+        fs::write(&reasons, reason.to_string())
+            .with_context(||format!("failed to write {}", reasons.display()))?;
         Ok(())
     }
 }
@@ -306,22 +305,14 @@ impl BenchmarkResult {
         &self.run.solver
     }
 
-    pub fn stdout_sync(&self) -> io::Result<impl io::Read> {
+    pub fn stdout(&self) -> io::Result<impl io::Read> {
         fs::File::open(self.run.stdout())
     }
 
-    pub fn stderr_sync(&self) -> io::Result<impl io::Read> {
+    pub fn stderr(&self) -> io::Result<impl io::Read> {
         fs::File::open(self.run.stderr())
     }
 
-
-    pub async fn stdout(&self) -> async_io::Result<impl async_io::Read> {
-        async_fs::File::open(self.run.stdout()).await
-    }
-
-    pub async fn stderr(&self) -> io::Result<impl async_io::Read> {
-        async_fs::File::open(self.run.stderr()).await
-    }
 
     pub fn config<'a>(&'a self) -> BenchmarkConfig<'a> {
         BenchmarkConfig(&self.run.config)
@@ -361,18 +352,20 @@ impl PostproIOAccess {
     }
 }
 
-#[async_trait]
 pub trait Postprocessor {
-    async fn process(&self, r: &BenchmarkResult) -> Result<()>;
+    type Processed: Send + Sync;
+    type Reduced;
+    fn map(&self, r: &BenchmarkResult) -> Result<Self::Processed>;
+    fn reduce(&self, iter: impl IntoIterator<Item=Self::Processed>) -> Result<Self::Reduced>;
     fn id(&self) -> &str;
-    fn write_results(self, conf: BenchmarkConfig, io: PostproIOAccess) -> Result<()>;
+    fn write_reduced(&self, results: Self::Reduced, conf: BenchmarkConfig, io: PostproIOAccess) -> Result<()>;
 }
 
-pub fn main(post: impl Postprocessor + Sync) -> DynResult<()> {
+pub fn main(post: impl Postprocessor + Sync) -> Result<()> {
     main_with_opts(post, Opts::from_args())
 }
 
-fn set_thread_cnt(n: usize) -> DynResult<()> {
+fn set_thread_cnt(n: usize) -> Result<()> {
     let r = rayon::ThreadPoolBuilder::new()
         .num_threads(n)
         .build_global();
@@ -388,6 +381,8 @@ fn set_thread_cnt(n: usize) -> DynResult<()> {
 }
 
 struct TermSignal;
+
+unsafe impl Send for TermSignal {}
 
 use lazy_static::*;
 
@@ -425,7 +420,9 @@ fn setup_ctrlc() {
     );
 }
 
-fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> {
+fn main_with_opts<P>(post: P, opts: Opts) -> Result<()> 
+    where P: Postprocessor + Sync
+{
     macro_rules! handle_term_signal {
         ($x:expr) => {
             match $x {
@@ -468,7 +465,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
 
     if !config.opts.only_post_process {
         let ui = Ui::new("Benchmarking", todo.len());
-        done.par_extend(todo[..].par_iter().filter_map(|conf| {
+        done.par_extend(todo[..].into_par_iter().filter_map(|conf| {
             if shall_terminate() {
                 None
             } else {
@@ -489,21 +486,19 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
         return Ok(());
     }
 
-    {
-        let ui = Ui::new("Postprocessing", done.len());
+    let mapped: Vec<P::Processed> = {
+        let ui = Ui::new("Mapping", done.len());
 
-        let done = stream::iter(done.into_iter().map(Ok));
-
-        // TODO: multithreaded instead of block_on
-        handle_term_signal!(executor::block_on(
-            done.try_for_each_concurrent(/* concurrency */ 32, |x| async {
-                let x = x;
-                let res = match post.process(&x).await {
-                    Ok(()) => (),
+        handle_term_signal!(
+        done.par_iter()
+            .filter_map(|x| Some({
+                let res = match post.map(&x) {
+                    Ok(x) => x,
                     Err(e) => {
                         if let Err(e) = x.run.remove_files(&ui, format!("failed to prostprocess: {}", e)) {
                             ui.println(format!("failed to delete result: {}", e));
                         }
+                        return None;
                     }
                 };
                 ui.progress();
@@ -512,9 +507,13 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
                 } else {
                     Ok(res)
                 }
-            })
-        ));
-    }
+            }))
+            .collect::<std::result::Result<Vec<_>, _>>())
+    };
+
+
+    let reduced = post.reduce(mapped)?;
+
 
     if shall_terminate() {
         return Ok(());
@@ -523,7 +522,7 @@ fn main_with_opts(post: impl Postprocessor + Sync, opts: Opts) -> DynResult<()> 
     let dir = config.postpro_dir(&post)?;
     fs::create_dir_all(&dir)?;
     println!("writing to output dir: {}", dir.display());
-    post.write_results(BenchmarkConfig(&config), PostproIOAccess(dir))?;
+    post.write_reduced(reduced, BenchmarkConfig(&config), PostproIOAccess(dir))?;
     Ok(())
 }
 

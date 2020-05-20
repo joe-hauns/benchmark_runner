@@ -1,13 +1,11 @@
 use crate::*;
 use std::fs;
-use std::sync::*;
 use std::os::unix::fs::PermissionsExt;
 use std::collections::*;
 
 struct TestPostpro {
     benchmarks: Vec<Benchmark>,
     solvers: Vec<Solver>,
-    proc: Mutex<Vec<BenchmarkResult>>,
 }
 
 impl TestPostpro {
@@ -17,23 +15,26 @@ impl TestPostpro {
         ) -> Self {
         TestPostpro {
             benchmarks,solvers,
-            proc: Mutex::new(Vec::new()),
         }
     }
 }
 
-#[async_trait]
 impl Postprocessor for TestPostpro {
+    type Processed = BenchmarkResult;
+    type Reduced = Vec<BenchmarkResult>;
     fn id(&self) -> &str { "test_postpro" }
 
-    async fn process(&self, r: &BenchmarkResult) -> DynResult<()> {
-        let mut lock = self.proc.lock().unwrap();
-        lock.push(r.clone());
-        Ok(())
+    fn map(&self, r: &BenchmarkResult) -> Result<BenchmarkResult> {
+        Ok(r.clone())
     }
 
-    fn write_results(self, conf: BenchmarkConfig, _: PostproIOAccess) -> DynResult<()> {
-        let proc = self.proc.lock().unwrap();
+    fn reduce(&self, iter: impl IntoIterator<Item=Self::Processed>) -> Result<Self::Reduced> {
+        Ok(iter.into_iter().collect())
+    }
+
+    fn write_reduced(&self, results: Self::Reduced, conf: BenchmarkConfig, _io: PostproIOAccess) -> Result<()>{
+
+        let proc = results;
         assert_eq!(self.benchmarks.len() * self.solvers.len(), proc.len());
         println!("{}", proc.len());
         for b in self.benchmarks.iter() {
