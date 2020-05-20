@@ -8,10 +8,15 @@ use std::fs::*;
 use std::io;
 use std::path::*;
 use std::process::*;
-use std::sync::mpsc::*;
+// use std::sync::mpsc::*;
+use crossbeam_channel::*;
 use std::sync::*;
 use structopt::*;
+use wait_timeout::ChildExt;
+use serde::{Serialize, Deserialize};
 use anyhow::*;
+use anyhow::Result;
+use std::time::*;
 
 macro_rules! log_err {
     ($e:expr $(, $fmt:tt)*) => {{ match $e {
@@ -67,7 +72,7 @@ struct Opts {
     solver_dir: PathBuf,
 
     /// timeout in seconds
-    timeout: usize,
+    timeout: u64,
 
     /// directory to which the outputs written 
     #[structopt(
@@ -108,7 +113,7 @@ impl Opts {
         Ok(Config {
             solvers: Self::lines_to_files(&self.solver_dir)?,
             benchmarks: Self::lines_to_files(&self.bench_dir)?,
-            timeout: self.timeout,
+            timeout: Duration::from_secs(self.timeout),
             opts: self,
         })
     }
@@ -197,7 +202,7 @@ impl BenchConf {
     fn outdir(&self) -> PathBuf {
         let mut path = PathBuf::from(&self.config.opts.outdir);
         path.push(self.solver.file());
-        path.push(format!("{}", self.config.timeout));
+        path.push(format!("{}", self.config.timeout.as_secs()));
         path.push(self.benchmark.file());
         path
     }
@@ -208,8 +213,13 @@ impl BenchConf {
     fn stdout(&self) -> PathBuf {
         self.outdir().join("stdout")
     }
+
     fn stderr(&self) -> PathBuf {
         self.outdir().join("stderr")
+    }
+
+    fn status_file(&self) -> PathBuf {
+        self.outdir().join("status")
     }
 
     fn remove_files(&self, ui: &Ui, reason: impl fmt::Display) -> Result<()> {
@@ -240,7 +250,7 @@ struct Config {
     solvers: Vec<Arc<Solver>>,
     benchmarks: Vec<Arc<Benchmark>>,
     opts: Opts,
-    timeout: usize,
+    timeout: Duration,
     // #[derivative(PartialEq = "ignore")]
     // #[derivative(Hash = "ignore")]
     // #[derivative(Hash = "ignore")]
@@ -304,9 +314,16 @@ impl<'a> BenchmarkConfig<'a> {
     }
 }
 
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub enum BenchmarkStatus {
+    Success,
+    Timeout,
+}
+
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct BenchmarkResult {
     run: BenchConf,
+    status: BenchmarkStatus,
 }
 
 impl BenchmarkResult {
@@ -317,12 +334,12 @@ impl BenchmarkResult {
         &self.run.solver
     }
 
-    pub fn stdout(&self) -> Result<impl io::Read + Send> {
-        Ok(fs::File::open(self.run.stdout())?)
+    pub fn status(&self) -> BenchmarkStatus {
+        self.status
     }
 
-    pub fn stderr(&self) -> Result<impl io::Read + Send> {
-        Ok(fs::File::open(self.run.stderr())?)
+    pub fn stdout(&self) -> Result<impl io::Read + Send> {
+        Ok(fs::File::open(self.run.stdout())?)
     }
 
 
@@ -334,6 +351,21 @@ impl BenchmarkResult {
 
 impl BenchmarkResult {
     fn from_file(conf: BenchConf) -> Result<Self> {
+        let file = File::open(conf.status_file())?;
+        Self::with_status(
+            conf,
+            serde_json::from_reader(file)
+                .context("failed to parse status_file")?,
+        )
+    }
+
+    fn write_status(conf: BenchConf, status: BenchmarkStatus) -> Result<Self> {
+        let file = File::open(conf.status_file())?;
+        serde_json::to_writer_pretty(file, &status)?;
+        Self::with_status(conf, status)
+
+    }
+    fn with_status(conf: BenchConf, status: BenchmarkStatus) -> Result<Self> {
         let check_file = |f: &PathBuf| -> io::Result<()> {
             if f.exists() {
                 Ok(())
@@ -346,7 +378,7 @@ impl BenchmarkResult {
         };
         check_file(&conf.stdout())?;
         check_file(&conf.stderr())?;
-        Ok(BenchmarkResult { run: conf })
+        Ok(BenchmarkResult { run: conf, status, })
     }
 }
 
@@ -407,16 +439,23 @@ fn shall_terminate() -> bool {
 }
 
 #[allow(unused)]
-fn term_receiver() -> Receiver<TermSignal> {
-    let (tx, rx) = channel();
-    unimplemented!(); // TODO
-    rx
+fn term_receiver() -> Result<Receiver<TermSignal>, TermSignal> {
+    // let (tx, rx) = channel();
+    let (tx, rx) = bounded(1);
+    let mut lock = TERM_SEND.lock()
+        .expect("failed to register termination receiver");
+    match &mut *lock {
+        Some(ref mut rcvs) =>  {
+            rcvs.push(tx);
+            Ok(rx)
+        }
+        None => Err(TermSignal),
+    }
 }
 
 fn setup_ctrlc() {
     log_err_!(
         ctrlc::set_handler(move || {
-            println!("received termination signal");
             eprintln!("received termination signal");
             *TERMINATE.write().unwrap() = true;
             if let Some(snds) = TERM_SEND.lock().unwrap().take() {
@@ -481,7 +520,8 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
                 None
             } else {
                 let result = match run(&ui, &conf) {
-                    Ok(x) => Some(x),
+                    Ok(Ok(x)) => Some(x),
+                    Ok(Err(TermSignal)) => None,
                     Err(e) => {
                         log_err_!(conf.remove_files(&ui, format!("failed to run {}: {}", conf, e)), "failed to remove output files");
                         None
@@ -537,7 +577,7 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
     Ok(())
 }
 
-fn run(_ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
+fn run(_ui: &Ui, conf: &BenchConf) -> Result<Result<BenchmarkResult, TermSignal>> {
     let solver = &conf.solver;
     let benchmark = &conf.benchmark;
     let dir = conf.outdir();
@@ -547,8 +587,6 @@ fn run(_ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
     macro_rules! cmd {
         ($bin:expr $(, $args:expr)*) => {{
             let mut msg = format!("{}", $bin.display());
-            // println!();
-            // print!("{}", $bin.display());
             $({
                 let args = $args;
                 let a: &OsStr = args.as_ref();
@@ -560,26 +598,53 @@ fn run(_ui: &Ui, conf: &BenchConf) -> Result<BenchmarkResult> {
                     None => msg.push_str(" ???"),
                 }
             })*
-            fs::write(conf.cmd(), format!("{}\n", msg))?;
+            fs::write(conf.cmd(), format!("{}\n", msg))
+                .with_context(|| format!( "failed to write command to file: {}", conf.cmd().display()))?;
 
+            // Exec::cmd($bin)
+            //     $(.arg($args))*
+            //     .stdout(File::create(conf.stdout())?)
+            //     .stderr(File::create(conf.stderr())?)
+            //     .popen().context("failed to launch child process")
             let mut cmd = Command::new($bin);
             $(cmd.arg($args);)*
             cmd.stdout(File::create(conf.stdout())?);
             cmd.stderr(File::create(conf.stderr())?);
-            cmd.output()
+            cmd.spawn().context("failed to launch child process")
         }}
     }
 
-    let result = cmd!(
+    let mut child = cmd!(
         &solver.bin,
         &benchmark.file,
-        format!("{}", conf.config.timeout)
+        format!("{}", conf.config.timeout.as_secs())
     )?;
 
-    if result.status.success() {
-        BenchmarkResult::from_file(conf.clone())
-    } else {
-        let msg = format!("unexpected exit status (code: {:?})", result.status.code(),);
-        Err(io::Error::new(io::ErrorKind::Other, msg))?
+    use std::time::*;
+
+    let start = Instant::now();
+    let poll = Duration::from_millis(500);
+    loop {
+        match child.wait_timeout(poll)
+            .context("failed to wait for child process")?
+            {
+            Some(status) => {
+                return if status.success() {
+                    Ok(Ok(BenchmarkResult::write_status(conf.clone(), BenchmarkStatus::Success)?))
+                } else {
+                    Err(anyhow!("unexpected exit status (code: {:?})", status.code()))
+                };
+            }
+            None => {
+                if shall_terminate() {
+                    child.kill().context("failed to kill child process")?;
+                    return Ok(Err(TermSignal))
+                }
+                if start.elapsed() > conf.config.timeout.mul_f64(1.2) {
+                    child.kill().context("failed to kill child process")?;
+                    return Ok(Ok(BenchmarkResult::write_status(conf.clone(), BenchmarkStatus::Timeout)?))
+                }
+            }
+        }
     }
 }
