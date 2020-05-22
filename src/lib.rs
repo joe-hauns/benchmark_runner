@@ -1,4 +1,3 @@
-// TODO use anyhow
 use itertools::*;
 use rayon::prelude::*;
 use std::ffi::*;
@@ -8,7 +7,6 @@ use std::fs::*;
 use std::io;
 use std::path::*;
 use std::process::*;
-// use std::sync::mpsc::*;
 use crossbeam_channel::*;
 use std::sync::*;
 use structopt::*;
@@ -103,10 +101,14 @@ impl Opts {
     where
         A: TryFrom<PathBuf>,
     {
-        read_dir(d).with_context(||format!("failed to open directory: {}", d.display()))?
-            .map_results(|e| e.path())
-            .map_results(|e| A::try_from(e).map(Arc::new))
-            .collect::<Result<_, _>>()
+        process_results( read_dir(d).with_context(||format!("failed to open directory: {}", d.display()))?,
+            |files| files 
+                .map(|f| A::try_from(f.path().canonicalize()
+                        .with_context(||format!("failed to canonize: {}", f.path().display()))?)
+                    .map(Arc::new)
+                    .with_context(|| format!("failed to read path: {}", f.path().display())))
+                .collect::<Result<_>>()
+                )
             .with_context(||format!("failed to read directory: {}", d.display()))?
     }
     fn validate(self) -> Result<Config> {
@@ -219,7 +221,7 @@ impl BenchConf {
     }
 
     fn status_file(&self) -> PathBuf {
-        self.outdir().join("status")
+        self.outdir().join("status.json")
     }
 
     fn remove_files(&self, ui: &Ui, reason: impl fmt::Display) -> Result<()> {
@@ -230,9 +232,9 @@ impl BenchConf {
                 .with_context(||format!("failed to remove directory: {}", err_dir.display()))?;
         }
         rename(&dir, &err_dir).with_context(||format!("failed move dir {} -> {}", dir.display(), err_dir.display()))?;
+        ui.println(&reason);
         ui.println(format!(
-            "{}: moving result to {} (may be deleted in another run)",
-            reason,
+            "moving result to {} (may be deleted in another run)",
             err_dir.display()
         ));
         let reasons = err_dir.join("reason.txt");
@@ -251,15 +253,6 @@ struct Config {
     benchmarks: Vec<Arc<Benchmark>>,
     opts: Opts,
     timeout: Duration,
-    // #[derivative(PartialEq = "ignore")]
-    // #[derivative(Hash = "ignore")]
-    // #[derivative(Hash = "ignore")]
-    // #[derivative(Debug = "ignore")]
-    // #[derivative(Hash = "ignore")]
-    // #[derivative(Ord = "ignore")]
-    // #[derivative(PartialOrd = "ignore")]
-    // #[derivative(PartialEq = "ignore")]
-    // recv_term: spmc::Receiver<TermSignal>,
 }
 
 impl Config {
@@ -287,8 +280,7 @@ impl Ui {
     }
 
     pub fn println(&self, m: impl std::fmt::Display) {
-        // println!("{}", m);
-        self.bar.println(m.to_string()); //TODO check me
+        self.bar.println(m.to_string()); 
     }
 
     pub fn progress(&self) {
@@ -360,8 +352,11 @@ impl BenchmarkResult {
     }
 
     fn write_status(conf: BenchConf, status: BenchmarkStatus) -> Result<Self> {
-        let file = File::open(conf.status_file())?;
-        serde_json::to_writer_pretty(file, &status)?;
+        let file = conf.status_file();
+        let file = File::create(file)
+            .with_context(||"failed to open status file")?;
+        serde_json::to_writer_pretty(file, &status)
+            .context("failed to write status json")?;
         Self::with_status(conf, status)
 
     }
@@ -582,7 +577,7 @@ fn run(_ui: &Ui, conf: &BenchConf) -> Result<Result<BenchmarkResult, TermSignal>
     let benchmark = &conf.benchmark;
     let dir = conf.outdir();
 
-    create_dir_all(&dir)?;
+    create_dir_all(&dir).context("failed to create results dir")?;
 
     macro_rules! cmd {
         ($bin:expr $(, $args:expr)*) => {{
@@ -601,16 +596,11 @@ fn run(_ui: &Ui, conf: &BenchConf) -> Result<Result<BenchmarkResult, TermSignal>
             fs::write(conf.cmd(), format!("{}\n", msg))
                 .with_context(|| format!( "failed to write command to file: {}", conf.cmd().display()))?;
 
-            // Exec::cmd($bin)
-            //     $(.arg($args))*
-            //     .stdout(File::create(conf.stdout())?)
-            //     .stderr(File::create(conf.stderr())?)
-            //     .popen().context("failed to launch child process")
             let mut cmd = Command::new($bin);
             $(cmd.arg($args);)*
-            cmd.stdout(File::create(conf.stdout())?);
-            cmd.stderr(File::create(conf.stderr())?);
-            cmd.spawn().context("failed to launch child process")
+            cmd.stdout(File::create(conf.stdout()).context("failed to create stdout file")?);
+            cmd.stderr(File::create(conf.stderr()).context("failed to create stdout file")?);
+            cmd.spawn().context("failed to launch child process")?
         }}
     }
 
@@ -618,7 +608,7 @@ fn run(_ui: &Ui, conf: &BenchConf) -> Result<Result<BenchmarkResult, TermSignal>
         &solver.bin,
         &benchmark.file,
         format!("{}", conf.config.timeout.as_secs())
-    )?;
+    );
 
     use std::time::*;
 
