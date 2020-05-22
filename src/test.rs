@@ -39,7 +39,7 @@ impl Postprocessor for TestPostpro {
         println!("{}", proc.len());
         for b in self.benchmarks.iter() {
             for s in self.solvers.iter() {
-                assert!(proc.iter().any(|r| r.benchmark() == b && r.solver() == s), "b: {}\ns:{}\nproc: {:#?}",s, b, proc);
+                assert!(proc.iter().any(|r| r.benchmark() == b && r.solver() == s), "\nb: {}\ns: {}\nproc: {:#?}", s, b, proc.iter().map(|r|format!("{:?}", (r.benchmark(), r.solver()))).collect::<Vec<_>>());
             }
         }
         assert_eq!(self.benchmarks.len(), conf.benchmarks().len());
@@ -111,8 +111,8 @@ fn test_all_ran() {
         }
 
         main_with_opts(TestPostpro ::new(
-            benchmarks.into_iter().map(Benchmark::new).collect(),
-            solvers.into_iter().map(Solver::new).collect(),
+            benchmarks.into_iter().map(|p|p.canonicalize().unwrap()).map(Benchmark::new).collect(),
+            solvers.into_iter().map(|p|p.canonicalize().unwrap()).map(Solver::new).collect(),
         ), opts).unwrap();
 
         true
