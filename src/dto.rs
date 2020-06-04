@@ -1,10 +1,10 @@
 use super::*;
-use std::ops::Deref;
-use std::io;
 use anyhow::*;
 use std::convert::TryFrom;
 use std::ffi::*;
 use std::fmt;
+use std::io;
+use std::ops::Deref;
 use std::path::*;
 use std::sync::Arc;
 
@@ -37,6 +37,13 @@ pub struct Benchmark {
     pub(crate) file: PathBuf,
 }
 
+impl Benchmark {
+    pub fn reader(&self) -> Result<impl io::Read> {
+        File::open(&self.file)
+            .with_context(|| format!("failed to read benchmark {}", self.file.display()))
+    }
+}
+
 impl fmt::Display for Benchmark {
     fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
         self.file.display().fmt(w)
@@ -57,15 +64,19 @@ impl TryFrom<PathBuf> for Benchmark {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Annotated<A,B>(pub(crate)A,pub(crate)B);
+pub struct Annotated<A, B>(pub(crate) A, pub(crate) B);
 
-impl<A,B> Deref for Annotated<A,B> {
+impl<A, B> Deref for Annotated<A, B> {
     type Target = A;
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-impl<A,B> Annotated<A,B> {
-    pub fn annotation(&self) -> &B { &self.1 }
+impl<A, B> Annotated<A, B> {
+    pub fn annotation(&self) -> &B {
+        &self.1
+    }
 }
 
 /// Represents a benchmark configuration that can be run. It contains a solver, a benchmark and some metadata.
@@ -74,6 +85,17 @@ pub struct BenchRunConf<A> {
     pub(crate) job: Arc<JobConfig<A>>,
     pub(crate) benchmark: Arc<Annotated<Benchmark, A>>,
     pub(crate) solver: Arc<Solver>,
+}
+impl<A> BenchRunConf<A> {
+    pub fn job(&self) -> &JobConfig<A> {
+        &self.job
+    }
+    pub fn benchmark(&self) -> &Annotated<Benchmark, A> {
+        &self.benchmark
+    }
+    pub fn solver(&self) -> &Solver {
+        &self.solver
+    }
 }
 
 impl<A> fmt::Display for BenchRunConf<A> {
@@ -90,11 +112,16 @@ pub struct JobConfig<A> {
 }
 
 impl<A> JobConfig<A> {
-    pub fn solvers(&self) -> &[impl AsRef<Solver>] {&self.solvers}
-    pub fn benchmarks(&self) -> &[impl AsRef<Annotated<Benchmark, A>>] {&self.benchmarks}
-    pub fn timeout(&self) -> Duration {self.timeout}
+    pub fn solvers(&self) -> &[impl AsRef<Solver>] {
+        &self.solvers
+    }
+    pub fn benchmarks(&self) -> &[impl AsRef<Annotated<Benchmark, A>>] {
+        &self.benchmarks
+    }
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
 }
-
 
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub enum BenchmarkStatus {
@@ -113,6 +140,10 @@ pub struct BenchRunResult<A> {
 }
 
 impl<A> BenchRunResult<A> {
-    pub fn stdout<'a>(&'a self) -> Result<impl io::Read + 'a> { Ok(io::Cursor::new(&self.stdout))}
-    pub fn stderr<'a>(&'a self) -> Result<impl io::Read + 'a> { Ok(io::Cursor::new(&self.stderr))}
+    pub fn stdout<'a>(&'a self) -> Result<impl io::Read + 'a> {
+        Ok(io::Cursor::new(&self.stdout))
+    }
+    pub fn stderr<'a>(&'a self) -> Result<impl io::Read + 'a> {
+        Ok(io::Cursor::new(&self.stderr))
+    }
 }
