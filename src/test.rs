@@ -3,48 +3,37 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::collections::*;
 
-struct TestPostpro {
-    benchmarks: Vec<Benchmark>,
-    solvers: Vec<Solver>,
-}
+struct TestPostpro;
 
 impl TestPostpro {
     fn new(
-    benchmarks: Vec<Benchmark>,
-    solvers: Vec<Solver>,
+    // benchmarks: Vec<Benchmark>,
+    // solvers: Vec<Solver>,
         ) -> Self {
         TestPostpro {
-            benchmarks,solvers,
+            // benchmarks,solvers,
         }
     }
 }
 
-impl Postprocessor for TestPostpro {
-    type Mapped = BenchmarkResult;
-    type Reduced = Vec<BenchmarkResult>;
-    // fn id(&self) -> &str { "test_postpro" }
+impl Summerizable for TestReduced {
+    fn write_summary<W: io::Write>(&self, _: W) -> Result<()> {Ok(())}
+}
 
-    fn map(&self, r: &BenchmarkResult) -> Result<BenchmarkResult> {
+#[derive(Deserialize, Serialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+struct TestReduced(JobConfig, Vec<(BenchRunConf, BenchRunResult)>);
+
+
+impl Postprocessor for TestPostpro {
+    type Mapped = BenchRunResult;
+    type Reduced = TestReduced;
+
+    fn map(&self, r: &BenchRunResult) -> Result<BenchRunResult> {
         Ok(r.clone())
     }
 
-    fn reduce(&self, iter: impl IntoIterator<Item=Self::Mapped>) -> Result<Self::Reduced> {
-        Ok(iter.into_iter().collect())
-    }
-
-    fn write_reduced(&self, results: Self::Reduced, conf: BenchmarkConfig, _io: PostproIOAccess) -> Result<()>{
-
-        let proc = results;
-        assert_eq!(self.benchmarks.len() * self.solvers.len(), proc.len());
-        println!("{}", proc.len());
-        for b in self.benchmarks.iter() {
-            for s in self.solvers.iter() {
-                assert!(proc.iter().any(|r| r.benchmark() == b && r.solver() == s), "\nb: {}\ns: {}\nproc: {:#?}", s, b, proc.iter().map(|r|format!("{:?}", (r.benchmark(), r.solver()))).collect::<Vec<_>>());
-            }
-        }
-        assert_eq!(self.benchmarks.len(), conf.benchmarks().len());
-        assert_eq!(self.solvers.len(), conf.solvers().len());
-        Ok(())
+    fn reduce(&self, conf: &JobConfig, iter: impl IntoIterator<Item=(BenchRunConf, Self::Mapped)>) -> Result<Self::Reduced> {
+        Ok(TestReduced(conf.clone(), iter.into_iter().collect()))
     }
 }
 
@@ -106,15 +95,62 @@ fn test_all_ran() {
         }
 
         for s in solvers.iter() {
-            fs::write(&s, format!("#!/bin/bash\necho {}",s.display())).unwrap();
+            fs::write(&s, format!(r#" #!/bin/bash 
+                                      echo {} $*    "#,s.display())).unwrap();
             fs::set_permissions(&s, Permissions::from_mode(0o777)).unwrap();
         }
 
-        main_with_opts(TestPostpro ::new(
-            benchmarks.into_iter().map(|p|p.canonicalize().unwrap()).map(Benchmark::new).collect(),
-            solvers.into_iter().map(|p|p.canonicalize().unwrap()).map(Solver::new).collect(),
+        let benchmarks: Vec<_> = benchmarks.into_iter().map(|p|p.canonicalize().unwrap()).collect();
+        let solvers: Vec<_>  = solvers.into_iter().map(|p|p.canonicalize().unwrap()).collect();
+
+        let proc = main_with_opts(TestPostpro ::new(
+            // benchmarks.iter().map(|p|Benchmark::new(p.clone())).collect(),
+            // solvers.iter().map(|p|Solver::new(p.clone())).collect(),
         ), opts).unwrap();
 
+        // let proc_benchmarks = proc.iter().map(|x|x.benchmark());
+        // let proc_solvers    = proc.iter().map(|x|x.solver());
+
+        assert_eq!(benchmarks.len() * solvers.len(), proc.1.len());
+        itertools::assert_equal(
+                benchmarks.iter().sorted(),
+                proc.0.benchmarks().iter().map(|x|&x.as_ref().file).sorted()
+            );
+        itertools::assert_equal(
+                solvers.iter().sorted(),
+                proc.0.solvers().iter().map(|x|&x.as_ref().file).sorted()
+            );
+
+        for (run, result) in proc.1.iter() {
+            assert_eq!(&proc.0, run.job.as_ref());
+            assert_eq!(run, &result.run);
+        }
+
+
+        for b in benchmarks.iter() {
+            for s in solvers.iter() {
+                let filtered = proc.1.iter()
+                    .filter(|(run,_res)| &run.benchmark.file == b && &run.solver.file == s)
+                    .collect::<Vec<_>>();
+                if filtered.len() != 1 {
+                    println!("benchmark: {}", b.display());
+                    println!("solver:    {}", s.display());
+                    println!("found:     {:#?}", filtered);
+                    panic!();
+                }
+                let (_, res) = filtered[0].clone();
+                //TODO better testing
+                let BenchRunResult {
+                    run: _,
+                    time: _,
+                    stdout: _,
+                    stderr: _,
+                    status,
+                    exit_status,
+                } = res;
+                assert!(exit_status == Some(0));
+                assert!(status == BenchmarkStatus::Success);
+            }
+        }
         true
     }
-// }

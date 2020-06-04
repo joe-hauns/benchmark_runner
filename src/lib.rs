@@ -1,20 +1,27 @@
+mod dto;
+mod dao;
+
+use dao::*;
 use itertools::*;
 use rayon::prelude::*;
 use std::ffi::*;
-use std::fmt;
 use std::fs;
 use std::fs::*;
 use std::io;
 use std::path::*;
-use std::process::*;
+use std::fmt::Arguments as FormatArgs;
 use crossbeam_channel::*;
 use std::sync::*;
 use structopt::*;
 use wait_timeout::ChildExt;
 use serde::{Serialize, Deserialize};
+use serde::de::DeserializeOwned;
 use anyhow::*;
 use anyhow::Result;
 use std::time::*;
+pub use dto::*;
+use std::convert::TryFrom;
+use thiserror::Error as ThisError;
 
 macro_rules! log_err {
     ($e:expr $(, $fmt:tt)*) => {{ match $e {
@@ -34,7 +41,7 @@ macro_rules! log_err_ {
 #[cfg(test)]
 mod test;
 
-#[derive(StructOpt, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(StructOpt, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
 /// A simple benchmark running tool.
 ///
 /// Gets a set of solvers and a set of benchmarks as inputs and runs each solver on each benchmark.
@@ -90,178 +97,59 @@ struct Opts {
     num_threads: Option<usize>,
 }
 
-trait TryFrom<P> {
-    fn try_from(p: P) -> Result<Self>
-    where
-        Self: Sized;
-}
+// trait TryFrom<P> {
+//     fn try_from(p: P) -> Result<Self>
+//     where
+//         Self: Sized;
+// }
 
 impl Opts {
-    fn lines_to_files<A>(d: &PathBuf) -> Result<Vec<Arc<A>>>
+    fn from_files_in_dir<A>(d: &PathBuf) -> Result<Vec<Arc<A>>>
     where
-        A: TryFrom<PathBuf>,
+        A: TryFrom<PathBuf, Error = anyhow::Error>,
+        // <A as TryFrom<PathBuf>>::Error: Send + Sync + std::error::Error + 'static,
+        // Result<Arc<A>, <A as TryFrom<PathBuf>>::Error>: anyhow::Context<A, <A as TryFrom<PathBuf>>::Error>,
     {
         process_results( read_dir(d).with_context(||format!("failed to open directory: {}", d.display()))?,
             |files| files 
-                .map(|f| A::try_from(f.path().canonicalize()
-                        .with_context(||format!("failed to canonize: {}", f.path().display()))?)
-                    .map(Arc::new)
-                    .with_context(|| format!("failed to read path: {}", f.path().display())))
+                .map(|f| -> Result<Arc<A>> {
+                    let path = f.path().canonicalize()
+                        .with_context(||format!("failed to canonize: {}", f.path().display()))?; 
+                    let parsed = A::try_from(path)
+                        .with_context(|| format!("failed to parse path: {}", f.path().display()))?;
+                    Ok(Arc::new(parsed))
+                })
                 .collect::<Result<_>>()
                 )
             .with_context(||format!("failed to read directory: {}", d.display()))?
     }
-    fn validate(self) -> Result<Config> {
-        Ok(Config {
-            solvers: Self::lines_to_files(&self.solver_dir)?,
-            benchmarks: Self::lines_to_files(&self.bench_dir)?,
-            timeout: Duration::from_secs(self.timeout),
+    fn validate(self) -> Result<ApplicationConfig> {
+        Ok(ApplicationConfig {
+            job_conf: Arc::new(JobConfig {
+                solvers: Self::from_files_in_dir(&self.solver_dir)?,
+                benchmarks: Self::from_files_in_dir(&self.bench_dir)?,
+                timeout: Duration::from_secs(self.timeout),
+            }),
             opts: self,
         })
     }
 }
 
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Benchmark {
-    file: PathBuf,
-}
-
-impl Benchmark {
-    #[cfg(test)]
-    fn new(file: PathBuf) -> Self {
-        Benchmark { file }
-    }
-}
-
-impl fmt::Display for BenchConf {
-    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
-        write!(w, "solver: {} benchmark: {}", self.solver, self.benchmark)
-    }
-}
-
-impl fmt::Display for Benchmark {
-    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
-        self.file.display().fmt(w)
-    }
-}
-
-impl Benchmark {
-    pub fn file(&self) -> &OsStr {
-        &self.file.file_name().unwrap()
-    }
-}
-
-impl TryFrom<PathBuf> for Benchmark {
-    fn try_from(file: PathBuf) -> Result<Self> {
-        Ok(Benchmark { file })
-    }
-}
-
-#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Solver {
-    bin: PathBuf,
-}
-
-impl Solver {
-    #[cfg(test)]
-    fn new(bin: PathBuf) -> Self {
-        Solver { bin }
-    }
-}
-
-impl fmt::Display for Solver {
-    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
-        self.bin.display().fmt(w)
-    }
-}
-
-impl Solver {
-    pub fn file(&self) -> &OsStr {
-        &self.bin.file_name().unwrap()
-    }
-}
-
-impl TryFrom<PathBuf> for Solver {
-    fn try_from(bin: PathBuf) -> Result<Self> {
-        Ok(Solver { bin })
-    }
-}
-
-#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct BenchConf {
-    config: Arc<Config>,
-    benchmark: Arc<Benchmark>,
-    solver: Arc<Solver>,
-}
-impl BenchConf {
-    fn new(config: Arc<Config>, benchmark: Arc<Benchmark>, solver: Arc<Solver>) -> Self {
-        BenchConf {
-            config,
-            benchmark,
-            solver,
-        }
-    }
-    fn outdir(&self) -> PathBuf {
-        let mut path = PathBuf::from(&self.config.opts.outdir);
-        path.push(self.solver.file());
-        path.push(format!("{}", self.config.timeout.as_secs()));
-        path.push(self.benchmark.file());
-        path
-    }
-
-    fn cmd(&self) -> PathBuf {
-        self.outdir().join("cmd")
-    }
-    fn stdout(&self) -> PathBuf {
-        self.outdir().join("stdout")
-    }
-
-    fn stderr(&self) -> PathBuf {
-        self.outdir().join("stderr")
-    }
-
-    fn status_file(&self) -> PathBuf {
-        self.outdir().join("status.json")
-    }
-
-    fn remove_files(&self, ui: &Ui, reason: impl fmt::Display) -> Result<()> {
-        let dir = self.outdir();
-        let err_dir = dir.with_extension("err");
-        if err_dir.exists() {
-            remove_dir_all(&err_dir)
-                .with_context(||format!("failed to remove directory: {}", err_dir.display()))?;
-        }
-        rename(&dir, &err_dir).with_context(||format!("failed move dir {} -> {}", dir.display(), err_dir.display()))?;
-        ui.println(&reason);
-        ui.println(format!(
-            "moving result to {} (may be deleted in another run)",
-            err_dir.display()
-        ));
-        let reasons = err_dir.join("reason.txt");
-        fs::write(&reasons, reason.to_string())
-            .with_context(||format!("failed to write {}", reasons.display()))?;
-        Ok(())
-    }
-}
-
-use derivative::*;
-
-#[derive(Derivative)]
-#[derivative(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct Config {
-    solvers: Vec<Arc<Solver>>,
-    benchmarks: Vec<Arc<Benchmark>>,
+struct ApplicationConfig {
     opts: Opts,
-    timeout: Duration,
+    job_conf: Arc<JobConfig>,
 }
 
-impl Config {
-    fn postpro_dir(&self) -> io::Result<PathBuf> {
+impl ApplicationConfig {
+    fn postpro_dir(&self) -> Result<PathBuf> {
         let dir = self.opts.outdir.join("timeout").join("post_proc");
-        create_dir_all(&dir)?;
+        create_dir_all(&dir)
+            .with_context(||format!( "failed to create postpro dir: {}", dir.display() ))?;
         Ok(dir)
     }
 }
+
 use indicatif::*;
 
 pub struct Ui {
@@ -294,89 +182,6 @@ impl Drop for Ui {
     }
 }
 
-#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct BenchmarkConfig<'a>(&'a Config);
-
-impl<'a> BenchmarkConfig<'a> {
-    pub fn solvers(&self) -> &[Arc<Solver>] {
-        &self.0.solvers
-    }
-    pub fn benchmarks(&self) -> &[Arc<Benchmark>] {
-        &self.0.benchmarks
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub enum BenchmarkStatus {
-    Success,
-    Timeout,
-}
-
-#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct BenchmarkResult {
-    run: BenchConf,
-    status: BenchmarkStatus,
-}
-
-impl BenchmarkResult {
-    pub fn benchmark(&self) -> &Benchmark {
-        &self.run.benchmark
-    }
-    pub fn solver(&self) -> &Solver {
-        &self.run.solver
-    }
-
-    pub fn status(&self) -> BenchmarkStatus {
-        self.status
-    }
-
-    pub fn stdout(&self) -> Result<impl io::Read + Send> {
-        Ok(fs::File::open(self.run.stdout())?)
-    }
-
-
-    pub fn config<'a>(&'a self) -> BenchmarkConfig<'a> {
-        BenchmarkConfig(&self.run.config)
-    }
-
-}
-
-impl BenchmarkResult {
-    fn from_file(conf: BenchConf) -> Result<Self> {
-        let file = File::open(conf.status_file())?;
-        Self::with_status(
-            conf,
-            serde_json::from_reader(file)
-                .context("failed to parse status_file")?,
-        )
-    }
-
-    fn write_status(conf: BenchConf, status: BenchmarkStatus) -> Result<Self> {
-        let file = conf.status_file();
-        let file = File::create(file)
-            .with_context(||"failed to open status file")?;
-        serde_json::to_writer_pretty(file, &status)
-            .context("failed to write status json")?;
-        Self::with_status(conf, status)
-
-    }
-    fn with_status(conf: BenchConf, status: BenchmarkStatus) -> Result<Self> {
-        let check_file = |f: &PathBuf| -> io::Result<()> {
-            if f.exists() {
-                Ok(())
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("file not found: {}", f.display()),
-                ))
-            }
-        };
-        check_file(&conf.stdout())?;
-        check_file(&conf.stderr())?;
-        Ok(BenchmarkResult { run: conf, status, })
-    }
-}
-
 pub struct PostproIOAccess(PathBuf);
 
 impl PostproIOAccess {
@@ -391,16 +196,23 @@ impl PostproIOAccess {
     }
 }
 
+pub trait Summerizable {
+    fn write_summary<W>(&self, out: W) -> Result<()>
+        where W: io::Write;
+}
+
 pub trait Postprocessor {
     type Mapped: Send + Sync;
-    type Reduced;
-    fn map(&self, r: &BenchmarkResult) -> Result<Self::Mapped>;
-    fn reduce(&self, iter: impl IntoIterator<Item=Self::Mapped>) -> Result<Self::Reduced>;
-    fn write_reduced(&self, results: Self::Reduced, conf: BenchmarkConfig, io: PostproIOAccess) -> Result<()>;
+    type Reduced: Serialize + DeserializeOwned + Summerizable;
+    fn map(&self, r: &BenchRunResult) -> Result<Self::Mapped>;
+    fn reduce(&self, job_conf: &JobConfig, iter: impl IntoIterator<Item=(BenchRunConf, Self::Mapped)>) -> Result<Self::Reduced>;
 }
 
 pub fn main(post: impl Postprocessor + Sync) -> Result<()> {
-    main_with_opts(post, Opts::from_args())
+    match main_with_opts(post, Opts::from_args()) {
+        Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
+        Err(Error::Anyhow(e)) => Err(e),
+    }
 }
 
 fn set_thread_cnt(n: usize) -> Result<()> {
@@ -418,7 +230,10 @@ fn set_thread_cnt(n: usize) -> Result<()> {
     Ok(())
 }
 
-struct TermSignal;
+
+#[derive(ThisError, Debug)]
+#[error("received termination signal")]
+pub struct TermSignal;
 
 unsafe impl Send for TermSignal {}
 
@@ -465,17 +280,18 @@ fn setup_ctrlc() {
     );
 }
 
-fn main_with_opts<P>(post: P, opts: Opts) -> Result<()> 
+
+#[derive(ThisError, Debug)]
+pub enum Error {
+    #[error("{0}")]
+    Anyhow(#[from] anyhow::Error),
+    #[error("{0}")]
+    TermSignal(#[from] TermSignal),
+}
+
+fn main_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error> 
     where P: Postprocessor + Sync
 {
-    macro_rules! handle_term_signal {
-        ($x:expr) => {
-            match $x {
-                Ok(x) => x,
-                Err(TermSignal) => return Ok(()),
-            }
-        };
-    }
     setup_ctrlc();
     let config = Arc::new(opts.validate()?);
 
@@ -491,21 +307,41 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
         ),
         "failed to set number of threads"
     );
+    let dao = dao::create(&config.opts)?;
 
     let (mut done, todo): (Vec<_>, Vec<_>) = {
-        let bs = &config.benchmarks[..];
-        let cs = &config.solvers[..];
+        let bs = &config.job_conf.benchmarks[..];
+        let cs = &config.job_conf.solvers[..];
+        let ui = Ui::new("Reading old results", bs.len() * cs.len());
         let config = &config;
         bs.par_iter()
             .flat_map(move |benchmark| {
                 cs.par_iter()
-                    .cloned()
-                    .map(move |solver| BenchConf::new(config.clone(), benchmark.clone(), solver))
+                    .map(move |solver| BenchRunConf {
+                        job: config.job_conf.clone(), 
+                        benchmark: benchmark.clone(), 
+                        solver: solver.clone(),
+                    })
             })
-            .partition_map(|c| match BenchmarkResult::from_file(c.clone()) {
-                Ok(res) => Either::Left(res),
-                Err(_) => Either::Right(c),
+            .partition_map(|c| {
+                let result = match dao.read_result(&c) {
+                    Ok(Some(res)) => Either::Left(res),
+                    Ok(None) => Either::Right(c),
+                    Err(e) => {
+                        ui.println(format_args!("failed to read result: {:#}", e));
+                        Either::Right(c)
+                    }
+                };
+                ui.progress();
+                result
             })
+    };
+
+    let remove_files = |ui: &Ui, conf: &BenchRunConf, reason: FormatArgs| {
+        match dao.remove_result(&conf, reason) {
+            Ok(()) => ui.println(format_args!("removed output files for {}", conf)),
+            Err(e) => ui.println(format_args!("failed to remove output files: {:#}", e)),
+        }
     };
 
     if !config.opts.only_post_process {
@@ -514,11 +350,11 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
             if shall_terminate() {
                 None
             } else {
-                let result = match run(&ui, &conf) {
-                    Ok(Ok(x)) => Some(x),
-                    Ok(Err(TermSignal)) => None,
+                let result = match run(&conf) {
+                    Ok(x) => Some(x),
+                    Err(Error::TermSignal(TermSignal)) => None,
                     Err(e) => {
-                        log_err_!(conf.remove_files(&ui, format!("failed to run {}: {}", conf, e)), "failed to remove output files");
+                        remove_files(&ui, &conf, format_args!("failed to run {}: {:#}", conf, e));
                         None
                     }
                 };
@@ -529,21 +365,18 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
     }
 
     if shall_terminate() {
-        return Ok(());
+        return Err(Error::TermSignal(TermSignal))
     }
 
-    let mapped: Vec<P::Mapped> = {
+    let mapped: Vec<_> = {
         let ui = Ui::new("Mapping", done.len());
 
-        handle_term_signal!(
         done.par_iter()
             .filter_map(|x| Some({
                 let res = match post.map(&x) {
-                    Ok(x) => x,
+                    Ok(mapped) => (x.run.clone(), mapped),
                     Err(e) => {
-                        if let Err(e) = x.run.remove_files(&ui, format!("failed to prostprocess: {}", e)) {
-                            ui.println(format!("failed to delete result: {}", e));
-                        }
+                        remove_files(&ui, &x.run, format_args!("failed to prostprocess: {:#}", e));
                         return None;
                     }
                 };
@@ -554,30 +387,30 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
                     Ok(res)
                 }
             }))
-            .collect::<std::result::Result<Vec<_>, _>>())
+            .collect::<std::result::Result<Vec<_>, _>>()?
     };
 
 
-    let reduced = post.reduce(mapped)?;
+    let reduced = post.reduce(&config.job_conf, mapped)?;
 
 
     if shall_terminate() {
-        return Ok(());
+        return Err(Error::TermSignal(TermSignal))
     }
 
     let dir = config.postpro_dir()?;
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(&dir).with_context(||format!("failed to create directory: {}", dir.display()))?;
     println!("writing to output dir: {}", dir.display());
-    post.write_reduced(reduced, BenchmarkConfig(&config), PostproIOAccess(dir))?;
-    Ok(())
+    // TODO serialize summary to file
+    reduced.write_summary(std::io::stdout().lock())?;
+    Ok(reduced)
 }
 
-fn run(_ui: &Ui, conf: &BenchConf) -> Result<Result<BenchmarkResult, TermSignal>> {
-    let solver = &conf.solver;
-    let benchmark = &conf.benchmark;
-    let dir = conf.outdir();
-
-    create_dir_all(&dir).context("failed to create results dir")?;
+fn run(run: &BenchRunConf) -> Result<BenchRunResult, Error> {
+    use std::io::Read;
+    use std::process::*;
+    let solver = &run.solver;
+    let benchmark = &run.benchmark;
 
     macro_rules! cmd {
         ($bin:expr $(, $args:expr)*) => {{
@@ -593,48 +426,79 @@ fn run(_ui: &Ui, conf: &BenchConf) -> Result<Result<BenchmarkResult, TermSignal>
                     None => msg.push_str(" ???"),
                 }
             })*
-            fs::write(conf.cmd(), format!("{}\n", msg))
-                .with_context(|| format!( "failed to write command to file: {}", conf.cmd().display()))?;
+
+            // TODO save command to BenchRunConf
+            // fs::write(run.cmd(), format!("{}\n", msg))
+            //     .with_context(|| format!( "failed to write command to file: {}", run.cmd().display()))?;
 
             let mut cmd = Command::new($bin);
             $(cmd.arg($args);)*
-            cmd.stdout(File::create(conf.stdout()).context("failed to create stdout file")?);
-            cmd.stderr(File::create(conf.stderr()).context("failed to create stdout file")?);
+            // cmd.stdout(Cursor::new(&mut stdout));
+            // cmd.stderr(Cursor::new(&mut stderr));
             cmd.spawn().context("failed to launch child process")?
         }}
     }
 
     let mut child = cmd!(
-        &solver.bin,
+        &solver.file,
         &benchmark.file,
-        format!("{}", conf.config.timeout.as_secs())
+        format!("{}", run.job.timeout.as_secs())
     );
 
     use std::time::*;
 
     let start = Instant::now();
+    // TODO make poll timeout relative to timeout of benchmark
     let poll = Duration::from_millis(500);
     loop {
-        match child.wait_timeout(poll)
-            .context("failed to wait for child process")?
-            {
+        let status = child.wait_timeout(poll)
+            .context("failed to wait for child process")?;
+
+        let with_bench_status = |child: &mut Child, exit_status: Option<i32>, status: BenchmarkStatus| -> Result<BenchRunResult, Error> {
+
+                    macro_rules! read_buf {
+                        ($buf: ident) => {
+                            {
+                                let mut $buf = vec![];
+                                if let Some(buf) = &mut child.$buf {
+                                    buf.read_to_end(&mut $buf)
+                                        .with_context(||format!( "failed to read {} of {}", stringify!( $buf ), run ))?;
+                                }
+                                $buf
+                            }
+                        }
+                    }
+
+                    let stdout = read_buf!(stdout);
+                    let stderr = read_buf!(stderr);
+
+                    Ok(BenchRunResult {
+                        run: run.clone(),
+                        status,
+                        time: start.elapsed(),
+                        stdout,
+                        stderr,
+                        exit_status,
+                    })
+
+        };
+
+        match status {
             Some(status) => {
-                return if status.success() {
-                    Ok(Ok(BenchmarkResult::write_status(conf.clone(), BenchmarkStatus::Success)?))
-                } else if shall_terminate() {
-                    return Ok(Err(TermSignal))
+                return if !status.success() && shall_terminate() {
+                    Err(Error::TermSignal(TermSignal))
                 } else {
-                    Err(anyhow!("unexpected exit status (code: {:?})", status.code()))
-                };
+                    with_bench_status(&mut child, status.code(), BenchmarkStatus::Success)
+                }
             }
             None => {
                 if shall_terminate() {
                     child.kill().context("failed to kill child process")?;
-                    return Ok(Err(TermSignal))
+                    return Err(TermSignal)?;
                 }
-                if start.elapsed() > conf.config.timeout.mul_f64(1.2) {
+                if start.elapsed() > run.job.timeout.mul_f64(1.2) {
                     child.kill().context("failed to kill child process")?;
-                    return Ok(Ok(BenchmarkResult::write_status(conf.clone(), BenchmarkStatus::Timeout)?))
+                    return with_bench_status(&mut child, None, BenchmarkStatus::Timeout)
                 }
             }
         }
