@@ -25,21 +25,19 @@ struct TestReduced<A>(JobConfig<()>, Vec<(BenchRunConf<A>, BenchRunResult<A>)>);
 
 
 impl Postprocessor for TestPostpro {
-    type Mapped = BenchRunResult<Self::BenchmarkAnnotations>;
-    type Reduced = TestReduced<Self::BenchmarkAnnotations>;
-    type BenchmarkAnnotations = ();
-    fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BenchmarkAnnotations> { Ok(()) }
+    type Mapped = BenchRunResult<Self::BAnnot>;
+    type Reduced = TestReduced<Self::BAnnot>;
+    type BAnnot = ();
+    fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BAnnot> { Ok(()) }
 
-    fn map(&self, r: &BenchRunResult<Self::BenchmarkAnnotations>) -> Result<BenchRunResult> {
+    fn map(&self, r: &BenchRunResult<Self::BAnnot>) -> Result<Self::Mapped> {
         Ok(r.clone())
     }
 
-    fn reduce(&self, conf: &JobConfig<Self::BenchmarkAnnotations>, iter: impl IntoIterator<Item=(BenchRunConf<Self::BenchmarkAnnotations>, Self::Mapped)>) -> Result<Self::Reduced> {
+    fn reduce(&self, conf: &JobConfig<Self::BAnnot>, iter: impl IntoIterator<Item=(BenchRunConf<Self::BAnnot>, Self::Mapped)>) -> Result<Self::Reduced> {
         Ok(TestReduced(conf.clone(), iter.into_iter().collect()))
     }
 
-    type BenchmarkAnnotations = ();
-    fn annotate_benchark(&self, b: &Benchmark) -> Result<Self::BenchmarkAnnotations> { Ok(()) }
 }
 
 #[test]

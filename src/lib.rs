@@ -119,7 +119,7 @@ pub struct Ui {
 fn validate_opts<P: Postprocessor>(
     postpro: &P,
     opts: Opts,
-) -> Result<ApplicationConfig<P::BenchmarkAnnotations>> {
+) -> Result<ApplicationConfig<P::BAnnot>> {
     fn from_files_in_dir<A, F>(d: &PathBuf, parse: F) -> Result<Vec<A>>
     where
         // A: TryFrom<PathBuf, Error = anyhow::Error>,
@@ -215,21 +215,22 @@ pub trait Summerizable {
 pub trait Postprocessor {
     type Mapped: Send + Sync;
     type Reduced: Serialize + DeserializeOwned + Summerizable;
-    type BenchmarkAnnotations: Serialize + DeserializeOwned + Send + Sync;
+    /// Benchmark Annotation
+    type BAnnot: Serialize + DeserializeOwned + Send + Sync;
 
-    fn annotate_benchark(&self, b: &Benchmark) -> Result<Self::BenchmarkAnnotations>;
-    fn map(&self, r: &BenchRunResult<Self::BenchmarkAnnotations>) -> Result<Self::Mapped>;
+    fn annotate_benchark(&self, b: &Benchmark) -> Result<Self::BAnnot>;
+    fn map(&self, r: &BenchRunResult<Self::BAnnot>) -> Result<Self::Mapped>;
     fn reduce(
         &self,
-        job_conf: &JobConfig<Self::BenchmarkAnnotations>,
-        iter: impl IntoIterator<Item = (BenchRunConf<Self::BenchmarkAnnotations>, Self::Mapped)>,
+        job_conf: &JobConfig<Self::BAnnot>,
+        iter: impl IntoIterator<Item = (BenchRunConf<Self::BAnnot>, Self::Mapped)>,
     ) -> Result<Self::Reduced>;
 }
 
 pub fn main<P>(post: P) -> Result<()>
 where
     P: Postprocessor + Sync,
-    <P as Postprocessor>::BenchmarkAnnotations: Clone,
+    <P as Postprocessor>::BAnnot: Clone,
 {
     match main_with_opts(post, Opts::from_args()) {
         Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
@@ -313,7 +314,7 @@ pub enum Error {
 fn main_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
 where
     P: Postprocessor + Sync,
-    <P as Postprocessor>::BenchmarkAnnotations: Clone,
+    <P as Postprocessor>::BAnnot: Clone,
 {
     setup_ctrlc();
 
@@ -361,7 +362,7 @@ where
     };
 
     let remove_files =
-        |ui: &Ui, conf: &BenchRunConf<P::BenchmarkAnnotations>, reason: FormatArgs| match dao
+        |ui: &Ui, conf: &BenchRunConf<P::BAnnot>, reason: FormatArgs| match dao
             .remove_result(&conf, reason)
         {
             Ok(()) => ui.println(format_args!("removed output files for {}", conf)),

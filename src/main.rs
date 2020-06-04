@@ -14,12 +14,12 @@ impl Summerizable for Unit {
 impl Postprocessor for NopPostprocessor {
     type Mapped = Unit;
     type Reduced = Unit;
-    type BenchmarkAnnotations = ();
-    fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BenchmarkAnnotations> { Ok(()) }
-    fn map(&self, _: &BenchRunResult<Self::BenchmarkAnnotations>) -> Result<Self::Mapped> {
+    type BAnnot = ();
+    fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BAnnot> { Ok(()) }
+    fn map(&self, _: &BenchRunResult<Self::BAnnot>) -> Result<Self::Mapped> {
         Ok(Unit)
     }
-    fn reduce(&self, _: &JobConfig<Self::BenchmarkAnnotations>,_: impl IntoIterator<Item=(BenchRunConf<Self::BenchmarkAnnotations>, Self::Mapped)>) -> Result<Self::Reduced> {
+    fn reduce(&self, _: &JobConfig<Self::BAnnot>,_: impl IntoIterator<Item=(BenchRunConf<Self::BAnnot>, Self::Mapped)>) -> Result<Self::Reduced> {
         Ok(Unit)
     }
 }
