@@ -16,25 +16,30 @@ impl TestPostpro {
     }
 }
 
-impl Summerizable for TestReduced {
+impl<A> Summerizable for TestReduced<A> {
     fn write_summary<W: io::Write>(&self, _: W) -> Result<()> {Ok(())}
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct TestReduced(JobConfig, Vec<(BenchRunConf, BenchRunResult)>);
+struct TestReduced<A>(JobConfig<()>, Vec<(BenchRunConf<A>, BenchRunResult<A>)>);
 
 
 impl Postprocessor for TestPostpro {
-    type Mapped = BenchRunResult;
-    type Reduced = TestReduced;
+    type Mapped = BenchRunResult<Self::BenchmarkAnnotations>;
+    type Reduced = TestReduced<Self::BenchmarkAnnotations>;
+    type BenchmarkAnnotations = ();
+    fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BenchmarkAnnotations> { Ok(()) }
 
-    fn map(&self, r: &BenchRunResult) -> Result<BenchRunResult> {
+    fn map(&self, r: &BenchRunResult<Self::BenchmarkAnnotations>) -> Result<BenchRunResult> {
         Ok(r.clone())
     }
 
-    fn reduce(&self, conf: &JobConfig, iter: impl IntoIterator<Item=(BenchRunConf, Self::Mapped)>) -> Result<Self::Reduced> {
+    fn reduce(&self, conf: &JobConfig<Self::BenchmarkAnnotations>, iter: impl IntoIterator<Item=(BenchRunConf<Self::BenchmarkAnnotations>, Self::Mapped)>) -> Result<Self::Reduced> {
         Ok(TestReduced(conf.clone(), iter.into_iter().collect()))
     }
+
+    type BenchmarkAnnotations = ();
+    fn annotate_benchark(&self, b: &Benchmark) -> Result<Self::BenchmarkAnnotations> { Ok(()) }
 }
 
 #[test]

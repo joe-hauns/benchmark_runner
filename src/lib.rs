@@ -1,27 +1,26 @@
-mod dto;
 mod dao;
+mod dto;
 
+use anyhow::Result;
+use anyhow::*;
+use crossbeam_channel::*;
 use dao::*;
+pub use dto::*;
 use itertools::*;
 use rayon::prelude::*;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::ffi::*;
+use std::fmt::Arguments as FormatArgs;
 use std::fs;
 use std::fs::*;
 use std::io;
 use std::path::*;
-use std::fmt::Arguments as FormatArgs;
-use crossbeam_channel::*;
 use std::sync::*;
-use structopt::*;
-use wait_timeout::ChildExt;
-use serde::{Serialize, Deserialize};
-use serde::de::DeserializeOwned;
-use anyhow::*;
-use anyhow::Result;
 use std::time::*;
-pub use dto::*;
-use std::convert::TryFrom;
+use structopt::*;
 use thiserror::Error as ThisError;
+use wait_timeout::ChildExt;
 
 macro_rules! log_err {
     ($e:expr $(, $fmt:tt)*) => {{ match $e {
@@ -53,10 +52,9 @@ mod test;
 ///
 /// The solver shall indicate success with a return value of zero and failure with a non-zero
 /// return value. If the solver returns non-zero its stdout, and stderr will be moved to a
-/// the output directory in a subdirectory suffixed by `.err`. These *.err directories may be 
+/// the output directory in a subdirectory suffixed by `.err`. These *.err directories may be
 /// deleted whe the benchmark runner is invoked with the same output directory again.
 struct Opts {
-
     /// directory that must containn must contain poroblem instance files, that will be passed to
     /// the solver as first argument.
     #[structopt(
@@ -67,7 +65,7 @@ struct Opts {
     )]
     bench_dir: PathBuf,
 
-    /// Directory containing solvers. 
+    /// Directory containing solvers.
     #[structopt(
         parse(from_os_str),
         short = "s",
@@ -79,7 +77,7 @@ struct Opts {
     /// timeout in seconds
     timeout: u64,
 
-    /// directory to which the outputs written 
+    /// directory to which the outputs written
     #[structopt(
         parse(from_os_str),
         short = "o",
@@ -97,55 +95,17 @@ struct Opts {
     num_threads: Option<usize>,
 }
 
-// trait TryFrom<P> {
-//     fn try_from(p: P) -> Result<Self>
-//     where
-//         Self: Sized;
-// }
-
-impl Opts {
-    fn from_files_in_dir<A>(d: &PathBuf) -> Result<Vec<Arc<A>>>
-    where
-        A: TryFrom<PathBuf, Error = anyhow::Error>,
-        // <A as TryFrom<PathBuf>>::Error: Send + Sync + std::error::Error + 'static,
-        // Result<Arc<A>, <A as TryFrom<PathBuf>>::Error>: anyhow::Context<A, <A as TryFrom<PathBuf>>::Error>,
-    {
-        process_results( read_dir(d).with_context(||format!("failed to open directory: {}", d.display()))?,
-            |files| files 
-                .map(|f| -> Result<Arc<A>> {
-                    let path = f.path().canonicalize()
-                        .with_context(||format!("failed to canonize: {}", f.path().display()))?; 
-                    let parsed = A::try_from(path)
-                        .with_context(|| format!("failed to parse path: {}", f.path().display()))?;
-                    Ok(Arc::new(parsed))
-                })
-                .collect::<Result<_>>()
-                )
-            .with_context(||format!("failed to read directory: {}", d.display()))?
-    }
-    fn validate(self) -> Result<ApplicationConfig> {
-        Ok(ApplicationConfig {
-            job_conf: Arc::new(JobConfig {
-                solvers: Self::from_files_in_dir(&self.solver_dir)?,
-                benchmarks: Self::from_files_in_dir(&self.bench_dir)?,
-                timeout: Duration::from_secs(self.timeout),
-            }),
-            opts: self,
-        })
-    }
-}
-
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct ApplicationConfig {
+struct ApplicationConfig<A> {
     opts: Opts,
-    job_conf: Arc<JobConfig>,
+    job_conf: Arc<JobConfig<A>>,
 }
 
-impl ApplicationConfig {
+impl<A> ApplicationConfig<A> {
     fn postpro_dir(&self) -> Result<PathBuf> {
         let dir = self.opts.outdir.join("timeout").join("post_proc");
         create_dir_all(&dir)
-            .with_context(||format!( "failed to create postpro dir: {}", dir.display() ))?;
+            .with_context(|| format!("failed to create postpro dir: {}", dir.display()))?;
         Ok(dir)
     }
 }
@@ -154,6 +114,56 @@ use indicatif::*;
 
 pub struct Ui {
     bar: ProgressBar,
+}
+
+fn validate_opts<P: Postprocessor>(
+    postpro: &P,
+    opts: Opts,
+) -> Result<ApplicationConfig<P::BenchmarkAnnotations>> {
+    fn from_files_in_dir<A, F>(d: &PathBuf, parse: F) -> Result<Vec<A>>
+    where
+        // A: TryFrom<PathBuf, Error = anyhow::Error>,
+        F: Fn(PathBuf) -> Result<A, anyhow::Error>,
+    {
+        process_results(
+            read_dir(d).with_context(|| format!("failed to open directory: {}", d.display()))?,
+            |files| {
+                files
+                    .map(|f| -> Result<A> {
+                        let path = f.path().canonicalize().with_context(|| {
+                            format!("failed to canonize: {}", f.path().display())
+                        })?;
+                        parse(path).with_context(|| {
+                            format!("failed to parse path: {}", f.path().display())
+                        })
+                    })
+                    .collect::<Result<_>>()
+            },
+        )
+        .with_context(|| format!("failed to read directory: {}", d.display()))?
+    }
+
+    Ok(ApplicationConfig {
+        job_conf: Arc::new(JobConfig {
+            solvers: from_files_in_dir(&opts.solver_dir, |file| Ok(Arc::new(Solver { file })))?,
+            benchmarks: {
+                let benchmarks = from_files_in_dir(&opts.bench_dir, |file| Ok(Benchmark { file }))?;
+                let ui = Ui::new("Annotating", benchmarks.len());
+
+                benchmarks
+                    .into_iter()
+                    .map(|b| {
+                        let res = postpro.annotate_benchark(&b)?;
+                        ui.progress();
+                        Ok(Arc::new(Annotated(b, res)))
+                    })
+                    .collect::<Result<_>>()
+                    .context("failed to annotated benchmarks")?
+            },
+            timeout: Duration::from_secs(opts.timeout),
+        }),
+        opts,
+    })
 }
 
 impl Ui {
@@ -168,7 +178,7 @@ impl Ui {
     }
 
     pub fn println(&self, m: impl std::fmt::Display) {
-        self.bar.println(m.to_string()); 
+        self.bar.println(m.to_string());
     }
 
     pub fn progress(&self) {
@@ -198,17 +208,29 @@ impl PostproIOAccess {
 
 pub trait Summerizable {
     fn write_summary<W>(&self, out: W) -> Result<()>
-        where W: io::Write;
+    where
+        W: io::Write;
 }
 
 pub trait Postprocessor {
     type Mapped: Send + Sync;
     type Reduced: Serialize + DeserializeOwned + Summerizable;
-    fn map(&self, r: &BenchRunResult) -> Result<Self::Mapped>;
-    fn reduce(&self, job_conf: &JobConfig, iter: impl IntoIterator<Item=(BenchRunConf, Self::Mapped)>) -> Result<Self::Reduced>;
+    type BenchmarkAnnotations: Serialize + DeserializeOwned + Send + Sync;
+
+    fn annotate_benchark(&self, b: &Benchmark) -> Result<Self::BenchmarkAnnotations>;
+    fn map(&self, r: &BenchRunResult<Self::BenchmarkAnnotations>) -> Result<Self::Mapped>;
+    fn reduce(
+        &self,
+        job_conf: &JobConfig<Self::BenchmarkAnnotations>,
+        iter: impl IntoIterator<Item = (BenchRunConf<Self::BenchmarkAnnotations>, Self::Mapped)>,
+    ) -> Result<Self::Reduced>;
 }
 
-pub fn main(post: impl Postprocessor + Sync) -> Result<()> {
+pub fn main<P>(post: P) -> Result<()>
+where
+    P: Postprocessor + Sync,
+    <P as Postprocessor>::BenchmarkAnnotations: Clone,
+{
     match main_with_opts(post, Opts::from_args()) {
         Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
         Err(Error::Anyhow(e)) => Err(e),
@@ -229,7 +251,6 @@ fn set_thread_cnt(n: usize) -> Result<()> {
     }
     Ok(())
 }
-
 
 #[derive(ThisError, Debug)]
 #[error("received termination signal")]
@@ -252,10 +273,11 @@ fn shall_terminate() -> bool {
 fn term_receiver() -> Result<Receiver<TermSignal>, TermSignal> {
     // let (tx, rx) = channel();
     let (tx, rx) = bounded(1);
-    let mut lock = TERM_SEND.lock()
+    let mut lock = TERM_SEND
+        .lock()
         .expect("failed to register termination receiver");
     match &mut *lock {
-        Some(ref mut rcvs) =>  {
+        Some(ref mut rcvs) => {
             rcvs.push(tx);
             Ok(rx)
         }
@@ -280,7 +302,6 @@ fn setup_ctrlc() {
     );
 }
 
-
 #[derive(ThisError, Debug)]
 pub enum Error {
     #[error("{0}")]
@@ -289,11 +310,14 @@ pub enum Error {
     TermSignal(#[from] TermSignal),
 }
 
-fn main_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error> 
-    where P: Postprocessor + Sync
+fn main_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
+where
+    P: Postprocessor + Sync,
+    <P as Postprocessor>::BenchmarkAnnotations: Clone,
 {
     setup_ctrlc();
-    let config = Arc::new(opts.validate()?);
+
+    let config = Arc::new(validate_opts(&post, opts)?);
 
     println!("output dir: {}", config.opts.outdir.display());
     println!("cpus: {}", num_cpus::get_physical());
@@ -316,12 +340,11 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
         let config = &config;
         bs.par_iter()
             .flat_map(move |benchmark| {
-                cs.par_iter()
-                    .map(move |solver| BenchRunConf {
-                        job: config.job_conf.clone(), 
-                        benchmark: benchmark.clone(), 
-                        solver: solver.clone(),
-                    })
+                cs.par_iter().map(move |solver| BenchRunConf {
+                    job: config.job_conf.clone(),
+                    benchmark: benchmark.clone(),
+                    solver: solver.clone(),
+                })
             })
             .partition_map(|c| {
                 let result = match dao.read_result(&c) {
@@ -337,12 +360,13 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
             })
     };
 
-    let remove_files = |ui: &Ui, conf: &BenchRunConf, reason: FormatArgs| {
-        match dao.remove_result(&conf, reason) {
+    let remove_files =
+        |ui: &Ui, conf: &BenchRunConf<P::BenchmarkAnnotations>, reason: FormatArgs| match dao
+            .remove_result(&conf, reason)
+        {
             Ok(()) => ui.println(format_args!("removed output files for {}", conf)),
             Err(e) => ui.println(format_args!("failed to remove output files: {:#}", e)),
-        }
-    };
+        };
 
     if !config.opts.only_post_process {
         let ui = Ui::new("Benchmarking", todo.len());
@@ -365,48 +389,55 @@ fn main_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
     }
 
     if shall_terminate() {
-        return Err(Error::TermSignal(TermSignal))
+        return Err(Error::TermSignal(TermSignal));
     }
 
     let mapped: Vec<_> = {
         let ui = Ui::new("Mapping", done.len());
 
         done.par_iter()
-            .filter_map(|x| Some({
-                let res = match post.map(&x) {
-                    Ok(mapped) => (x.run.clone(), mapped),
-                    Err(e) => {
-                        remove_files(&ui, &x.run, format_args!("failed to prostprocess: {:#}", e));
-                        return None;
+            .filter_map(|x| {
+                Some({
+                    let res = match post.map(&x) {
+                        Ok(mapped) => (x.run.clone(), mapped),
+                        Err(e) => {
+                            remove_files(
+                                &ui,
+                                &x.run,
+                                format_args!("failed to prostprocess: {:#}", e),
+                            );
+                            return None;
+                        }
+                    };
+                    ui.progress();
+                    if shall_terminate() {
+                        Err(TermSignal)
+                    } else {
+                        Ok(res)
                     }
-                };
-                ui.progress();
-                if shall_terminate() {
-                    Err(TermSignal)
-                } else {
-                    Ok(res)
-                }
-            }))
+                })
+            })
             .collect::<std::result::Result<Vec<_>, _>>()?
     };
 
-
     let reduced = post.reduce(&config.job_conf, mapped)?;
 
-
     if shall_terminate() {
-        return Err(Error::TermSignal(TermSignal))
+        return Err(Error::TermSignal(TermSignal));
     }
 
     let dir = config.postpro_dir()?;
-    fs::create_dir_all(&dir).with_context(||format!("failed to create directory: {}", dir.display()))?;
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create directory: {}", dir.display()))?;
     println!("writing to output dir: {}", dir.display());
     // TODO serialize summary to file
     reduced.write_summary(std::io::stdout().lock())?;
     Ok(reduced)
 }
 
-fn run(run: &BenchRunConf) -> Result<BenchRunResult, Error> {
+fn run<A>(run: &BenchRunConf<A>) -> Result<BenchRunResult<A>, Error> 
+where A: Clone
+{
     use std::io::Read;
     use std::process::*;
     let solver = &run.solver;
@@ -451,36 +482,37 @@ fn run(run: &BenchRunConf) -> Result<BenchRunResult, Error> {
     // TODO make poll timeout relative to timeout of benchmark
     let poll = Duration::from_millis(500);
     loop {
-        let status = child.wait_timeout(poll)
+        let status = child
+            .wait_timeout(poll)
             .context("failed to wait for child process")?;
 
-        let with_bench_status = |child: &mut Child, exit_status: Option<i32>, status: BenchmarkStatus| -> Result<BenchRunResult, Error> {
-
-                    macro_rules! read_buf {
-                        ($buf: ident) => {
-                            {
-                                let mut $buf = vec![];
-                                if let Some(buf) = &mut child.$buf {
-                                    buf.read_to_end(&mut $buf)
-                                        .with_context(||format!( "failed to read {} of {}", stringify!( $buf ), run ))?;
-                                }
-                                $buf
-                            }
-                        }
+        let with_bench_status = |child: &mut Child,
+                                 exit_status: Option<i32>,
+                                 status: BenchmarkStatus|
+         -> Result<BenchRunResult<A>, Error> {
+            macro_rules! read_buf {
+                ($buf: ident) => {{
+                    let mut $buf = vec![];
+                    if let Some(buf) = &mut child.$buf {
+                        buf.read_to_end(&mut $buf).with_context(|| {
+                            format!("failed to read {} of {}", stringify!($buf), run)
+                        })?;
                     }
+                    $buf
+                }};
+            }
 
-                    let stdout = read_buf!(stdout);
-                    let stderr = read_buf!(stderr);
+            let stdout = read_buf!(stdout);
+            let stderr = read_buf!(stderr);
 
-                    Ok(BenchRunResult {
-                        run: run.clone(),
-                        status,
-                        time: start.elapsed(),
-                        stdout,
-                        stderr,
-                        exit_status,
-                    })
-
+            Ok(BenchRunResult {
+                run: run.clone(),
+                status,
+                time: start.elapsed(),
+                stdout,
+                stderr,
+                exit_status,
+            })
         };
 
         match status {
@@ -498,7 +530,7 @@ fn run(run: &BenchRunConf) -> Result<BenchRunResult, Error> {
                 }
                 if start.elapsed() > run.job.timeout.mul_f64(1.2) {
                     child.kill().context("failed to kill child process")?;
-                    return with_bench_status(&mut child, None, BenchmarkStatus::Timeout)
+                    return with_bench_status(&mut child, None, BenchmarkStatus::Timeout);
                 }
             }
         }
