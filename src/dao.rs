@@ -123,8 +123,8 @@ where
                 exit_status,
             },
         )?;
-        write_vec(&self.stdout_txt(run), stderr)?;
-        write_vec(&self.stderr_txt(run), stdout)?;
+        write_vec(&self.stdout_txt(run), stdout)?;
+        write_vec(&self.stderr_txt(run), stderr)?;
         Ok(())
     }
 
