@@ -103,7 +103,7 @@ struct ApplicationConfig<A> {
 
 impl<A> ApplicationConfig<A> {
     fn postpro_dir(&self) -> Result<PathBuf> {
-        let dir = self.opts.outdir.join("timeout").join("post_proc");
+        let dir = self.opts.outdir.join("post_proc").join(format!("{}", self.opts.timeout));
         create_dir_all(&dir)
             .with_context(|| format!("failed to create postpro dir: {}", dir.display()))?;
         Ok(dir)
@@ -376,7 +376,12 @@ where
                 None
             } else {
                 let result = match run(&conf) {
-                    Ok(x) => Some(x),
+                    Ok(x) => {
+                        if let Err(e) = dao.store_result(&x) {
+                            eprintln!("failed to store result: {:#}", e);
+                        }
+                        Some(x)
+                    }
                     Err(Error::TermSignal(TermSignal)) => None,
                     Err(e) => {
                         remove_files(&ui, &conf, format_args!("failed to run {}: {:#}", conf, e));
