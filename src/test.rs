@@ -65,23 +65,24 @@ fn test_all_ran() {
     fn prop(benchmarks: BTreeSet<usize>, solvers: BTreeSet<usize>) -> bool {
 
         let benchmarks = benchmarks.into_iter()
-            .map(|x| format!("{}", x))
+            .map(|x| format!("benchmark{}", x))
             .collect::<Vec<_>>();
 
         let solvers = solvers.into_iter()
-            .map(|x| format!("{}", x))
+            .map(|x| format!("solver{}", x))
             .collect::<Vec<_>>();
 
         let bench_dir = tempfile::tempdir().unwrap();
         let solver_dir = tempfile::tempdir().unwrap();
         let out_dir = tempfile::tempdir().unwrap();
+        let timeout = 1;
 
         let opts = Opts {
             bench_dir: bench_dir.path().to_owned(),
             solver_dir: solver_dir.path().to_owned(),
             outdir: out_dir.path().to_owned(),
             only_post_process: false,
-            timeout: 1,
+            timeout,
             num_threads: None,
         };
 
@@ -97,9 +98,24 @@ fn test_all_ran() {
             fs::write(&b, format!("{}", b.display())).unwrap();
         }
 
+        let script = |s: &PathBuf| -> String { 
+            format!(r#" 
+              #!/bin/bash 
+              echo err {solver} $* >> /dev/stderr
+              echo {solver} $*
+              "#, solver=s.parent().unwrap().canonicalize().unwrap().join(s.file_name().unwrap()).display())
+        };
+
+        let script_err = |solver: &PathBuf, benchmark: &PathBuf, timeout: u64| -> String { 
+            format!("err {} {} {}\n", solver.display(), benchmark.display(), timeout)
+        };
+
+        let script_out = |solver: &PathBuf, benchmark: &PathBuf, timeout: u64| -> String { 
+            format!("{} {} {}\n", solver.display(), benchmark.display(), timeout)
+        };
+
         for s in solvers.iter() {
-            fs::write(&s, format!(r#" #!/bin/bash 
-                                      echo {} $*    "#,s.display())).unwrap();
+            fs::write(&s, script(&s)).unwrap();
             fs::set_permissions(&s, Permissions::from_mode(0o777)).unwrap();
         }
 
@@ -146,13 +162,15 @@ fn test_all_ran() {
                 let BenchRunResult {
                     run: _,
                     time: _,
-                    stdout: _,
-                    stderr: _,
+                    stdout,
+                    stderr,
                     status,
                     exit_status,
                 } = res;
-                assert!(exit_status == Some(0));
-                assert!(status == BenchmarkStatus::Success);
+                assert_eq!(String::from_utf8(stdout.clone()).unwrap(), script_out(&s, &b, timeout));
+                assert_eq!(String::from_utf8(stderr.clone()).unwrap(), script_err(&s, &b, timeout));
+                assert_eq!(exit_status, Some(0));
+                assert_eq!(status, BenchmarkStatus::Success);
             }
         }
         true

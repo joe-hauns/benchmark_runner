@@ -465,8 +465,8 @@ where A: Clone
 
             let mut cmd = Command::new($bin);
             $(cmd.arg($args);)*
-            // cmd.stdout(Cursor::new(&mut stdout));
-            // cmd.stderr(Cursor::new(&mut stderr));
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
             cmd.spawn().context("failed to launch child process")?
         }}
     }
