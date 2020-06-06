@@ -18,7 +18,7 @@ use std::io;
 use std::path::*;
 use std::sync::*;
 use std::time::*;
-use structopt::*;
+use clap::*;
 use thiserror::Error as ThisError;
 use wait_timeout::ChildExt;
 
@@ -40,7 +40,7 @@ macro_rules! log_err_ {
 #[cfg(test)]
 mod test;
 
-#[derive(StructOpt, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clap, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
 /// A simple benchmark running tool.
 ///
 /// Gets a set of solvers and a set of benchmarks as inputs and runs each solver on each benchmark.
@@ -54,45 +54,45 @@ mod test;
 /// return value. If the solver returns non-zero its stdout, and stderr will be moved to a
 /// the output directory in a subdirectory suffixed by `.err`. These *.err directories may be
 /// deleted whe the benchmark runner is invoked with the same output directory again.
-struct Opts {
+pub struct Opts {
     /// directory that must containn must contain poroblem instance files, that will be passed to
     /// the solver as first argument.
-    #[structopt(
+    #[clap(
         parse(from_os_str),
         short = "b",
         long = "benchmarks",
         default_value = "benchmarks"
     )]
-    bench_dir: PathBuf,
+    pub bench_dir: PathBuf,
 
     /// Directory containing solvers.
-    #[structopt(
+    #[clap(
         parse(from_os_str),
         short = "s",
         long = "solvers",
         default_value = "solvers"
     )]
-    solver_dir: PathBuf,
+    pub solver_dir: PathBuf,
 
     /// timeout in seconds
-    timeout: u64,
+    pub timeout: u64,
 
     /// directory to which the outputs written
-    #[structopt(
+    #[clap(
         parse(from_os_str),
         short = "o",
         long = "outdir",
         default_value = "benchmark_results"
     )]
-    outdir: PathBuf,
+    pub outdir: PathBuf,
 
     /// only run post processor, not benchmarks
-    #[structopt(short = "p", long = "post")]
-    only_post_process: bool,
+    #[clap(short = "p", long = "post")]
+    pub only_post_process: bool,
 
     /// How many threads shall be ran in parallel? [default: number of physical cpus]
-    #[structopt(short = "t", long = "threads")]
-    num_threads: Option<usize>,
+    #[clap(short = "t", long = "threads")]
+    pub num_threads: Option<usize>,
 }
 
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
@@ -120,34 +120,38 @@ fn validate_opts<P: Postprocessor>(
     postpro: &P,
     opts: Opts,
 ) -> Result<ApplicationConfig<P::BAnnot>> {
-    fn from_files_in_dir<A, F>(d: &PathBuf, parse: F) -> Result<Vec<A>>
+    fn from_file_or_dir<A, F>(d: &PathBuf, parse: F) -> Result<Vec<A>>
     where
         // A: TryFrom<PathBuf, Error = anyhow::Error>,
         F: Fn(PathBuf) -> Result<A, anyhow::Error>,
     {
-        process_results(
-            read_dir(d).with_context(|| format!("failed to open directory: {}", d.display()))?,
-            |files| {
-                files
-                    .map(|f| -> Result<A> {
-                        let path = f.path().canonicalize().with_context(|| {
-                            format!("failed to canonize: {}", f.path().display())
-                        })?;
-                        parse(path).with_context(|| {
-                            format!("failed to parse path: {}", f.path().display())
+        if d.is_dir() {
+            process_results(
+                read_dir(d).with_context(|| format!("failed to open directory: {}", d.display()))?,
+                |files| {
+                    files
+                        .map(|f| -> Result<A> {
+                            let path = f.path().canonicalize().with_context(|| {
+                                format!("failed to canonize: {}", f.path().display())
+                            })?;
+                            parse(path).with_context(|| {
+                                format!("failed to parse path: {}", f.path().display())
+                            })
                         })
-                    })
-                    .collect::<Result<_>>()
-            },
-        )
-        .with_context(|| format!("failed to read directory: {}", d.display()))?
+                        .collect::<Result<_>>()
+                },
+            )
+            .with_context(|| format!("failed to read directory: {}", d.display()))?
+        } else {
+            Ok(vec![ parse(d.clone())? ])
+        }
     }
 
     Ok(ApplicationConfig {
         job_conf: Arc::new(JobConfig {
-            solvers: from_files_in_dir(&opts.solver_dir, |file| Ok(Arc::new(Solver { file })))?,
+            solvers: from_file_or_dir(&opts.solver_dir, |file| Ok(Arc::new(Solver { file })))?,
             benchmarks: {
-                let benchmarks = from_files_in_dir(&opts.bench_dir, |file| Ok(Benchmark { file }))?;
+                let benchmarks = from_file_or_dir(&opts.bench_dir, |file| Ok(Benchmark { file }))?;
                 let ui = Ui::new("Annotating", benchmarks.len());
 
                 benchmarks
@@ -227,12 +231,12 @@ pub trait Postprocessor {
     ) -> Result<Self::Reduced>;
 }
 
-pub fn main<P>(post: P) -> Result<()>
+pub fn main<P>(post: P, opts: Opts) -> Result<()>
 where
     P: Postprocessor + Sync,
     <P as Postprocessor>::BAnnot: Clone,
 {
-    match main_with_opts(post, Opts::from_args()) {
+    match main_with_opts(post, opts) {
         Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
         Err(Error::Anyhow(e)) => Err(e),
     }

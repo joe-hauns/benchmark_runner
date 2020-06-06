@@ -1,7 +1,8 @@
-use anyhow::*;
 use benchmark_runner::*;
 use std::io;
 use serde::*;
+use clap::*;
+use anyhow::Result;
 
 
 struct NopPostprocessor;
@@ -25,5 +26,5 @@ impl Postprocessor for NopPostprocessor {
 }
 
 fn main() -> Result<()> {
-    benchmark_runner::main(NopPostprocessor)
+    benchmark_runner::main(NopPostprocessor, Opts::parse())
 }
