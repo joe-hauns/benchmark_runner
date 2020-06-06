@@ -10,7 +10,6 @@ use itertools::*;
 use rayon::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::ffi::*;
 use std::fmt::Arguments as FormatArgs;
 use std::fs;
 use std::fs::*;
@@ -450,41 +449,13 @@ where A: Clone
 {
     use std::io::Read;
     use std::process::*;
-    let solver = &run.solver;
-    let benchmark = &run.benchmark;
 
-    macro_rules! cmd {
-        ($bin:expr $(, $args:expr)*) => {{
-            let mut msg = format!("{}", $bin.display());
-            $({
-                let args = $args;
-                let a: &OsStr = args.as_ref();
-                match a.to_str() {
-                    Some(s) => {
-                        msg.push_str(" ");
-                        msg.push_str(s);
-                    }
-                    None => msg.push_str(" ???"),
-                }
-            })*
+    let mut cmd = Command::new(run.command());
+    cmd.args(run.args());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child =cmd.spawn().context("failed to launch child process")?;
 
-            // TODO save command to BenchRunConf
-            // fs::write(run.cmd(), format!("{}\n", msg))
-            //     .with_context(|| format!( "failed to write command to file: {}", run.cmd().display()))?;
-
-            let mut cmd = Command::new($bin);
-            $(cmd.arg($args);)*
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
-            cmd.spawn().context("failed to launch child process")?
-        }}
-    }
-
-    let mut child = cmd!(
-        &solver.file,
-        &benchmark.file,
-        format!("{}", run.job.timeout.as_secs())
-    );
 
     use std::time::*;
 

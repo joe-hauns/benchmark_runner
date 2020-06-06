@@ -86,6 +86,28 @@ pub struct BenchRunConf<A> {
     pub(crate) benchmark: Arc<Annotated<Benchmark, A>>,
     pub(crate) solver: Arc<Solver>,
 }
+
+impl<'a> AsRef<OsStr> for Args<'a> {
+    fn as_ref(&self) -> &OsStr {
+        match self {
+            Args::PathBuf(p) => p.as_ref(),
+            Args::TimeOut(t) => t.as_ref(),
+        }
+    }
+}
+impl<'a> fmt::Display for Args<'a> {
+    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Args::PathBuf(p) => p.display().fmt(w),
+            Args::TimeOut(t) => t.fmt(w),
+        }
+    }
+}
+enum Args<'a> {
+    PathBuf(&'a PathBuf),
+    TimeOut(String),
+}
+
 impl<A> BenchRunConf<A> {
     pub fn job(&self) -> &JobConfig<A> {
         &self.job
@@ -96,11 +118,25 @@ impl<A> BenchRunConf<A> {
     pub fn solver(&self) -> &Solver {
         &self.solver
     }
+
+    pub fn command<'a>(&'a self) -> &'a PathBuf {
+        &self.solver().file
+    }
+
+    pub fn args<'a>(&'a self) -> impl IntoIterator<Item = impl AsRef<OsStr> + fmt::Display + 'a> + 'a {
+        use std::iter::once;
+        once(Args::PathBuf(&self.benchmark().file))
+            .chain(once(Args::TimeOut(format!("{}", self.job.timeout.as_secs()))))
+    }
 }
 
 impl<A> fmt::Display for BenchRunConf<A> {
     fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
-        write!(w, "solver: {} benchmark: {}", self.solver, self.benchmark.0)
+        write!(w, "{}", self.command().display())?;
+        for arg in self.args() {
+            write!(w, " {}", arg)?;
+        }
+        Ok(())
     }
 }
 
