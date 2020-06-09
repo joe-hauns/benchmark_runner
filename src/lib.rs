@@ -269,24 +269,6 @@ fn term_receiver() -> Result<Receiver<TermSignal>, TermSignal> {
         None => Err(TermSignal),
     }
 }
-
-fn setup_ctrlc() {
-    log_err_!(
-        ctrlc::set_handler(move || {
-            eprintln!("received termination signal");
-            *TERMINATE.write().unwrap() = true;
-            if let Some(snds) = TERM_SEND.lock().unwrap().take() {
-                for snd in snds {
-                    log_err_!(snd.send(TermSignal), "failed to send termination signal");
-                }
-            } else {
-                eprintln!("termination signal was already sent");
-            }
-        }),
-        "failed to set up ctrl-c signal handling"
-    );
-}
-
 #[derive(ThisError, Debug)]
 pub enum Error {
     #[error("{0}")]
@@ -300,90 +282,23 @@ where
     P: Postprocessor + Sync,
     <P as Postprocessor>::BAnnot: Clone,
 {
-    let config = validate_opts(&post, opts)?;
+    let conf = validate_opts(&post, opts)?;
+    main_with_conf(post, conf)
+}
 
+fn main_with_conf<P>(post: P, conf: ApplicationConfig<P::BAnnot>) -> Result<P::Reduced, Error>
+where
+    P: Postprocessor + Sync,
+    <P as Postprocessor>::BAnnot: Clone,
+{
     let ApplicationConfig {
         job,
         dao,
         service,
-    } = config;
+    } = conf;
 
     let dao = dao::create(dao)?;
     let service = service::create(service)?;
     service.run(job, &dao, &post)
 
-}
-
-fn run_command<A>(run: &BenchRunConf<A>) -> Result<BenchRunResult<A>, Error> 
-where A: Clone
-{
-    use std::io::Read;
-    use std::process::*;
-
-    let mut cmd = Command::new(run.command());
-    cmd.args(run.args());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    let mut child =cmd.spawn().context("failed to launch child process")?;
-
-
-    use std::time::*;
-
-    let start = Instant::now();
-    // TODO make poll timeout relative to timeout of benchmark
-    let poll = Duration::from_millis(500);
-    loop {
-        let status = child
-            .wait_timeout(poll)
-            .context("failed to wait for child process")?;
-
-        let with_bench_status = |child: &mut Child,
-                                 exit_status: Option<i32>,
-                                 status: BenchmarkStatus|
-         -> Result<BenchRunResult<A>, Error> {
-            macro_rules! read_buf {
-                ($buf: ident) => {{
-                    let mut $buf = vec![];
-                    if let Some(buf) = &mut child.$buf {
-                        buf.read_to_end(&mut $buf).with_context(|| {
-                            format!("failed to read {} of {}", stringify!($buf), run)
-                        })?;
-                    }
-                    $buf
-                }};
-            }
-
-            let stdout = read_buf!(stdout);
-            let stderr = read_buf!(stderr);
-
-            Ok(BenchRunResult {
-                run: run.clone(),
-                status,
-                time: start.elapsed(),
-                stdout,
-                stderr,
-                exit_status,
-            })
-        };
-
-        match status {
-            Some(status) => {
-                return if !status.success() && shall_terminate() {
-                    Err(Error::TermSignal(TermSignal))
-                } else {
-                    with_bench_status(&mut child, status.code(), BenchmarkStatus::Success)
-                }
-            }
-            None => {
-                if shall_terminate() {
-                    child.kill().context("failed to kill child process")?;
-                    return Err(TermSignal)?;
-                }
-                if start.elapsed() > run.job.timeout.mul_f64(1.2) {
-                    child.kill().context("failed to kill child process")?;
-                    return with_bench_status(&mut child, None, BenchmarkStatus::Timeout);
-                }
-            }
-        }
-    }
 }
