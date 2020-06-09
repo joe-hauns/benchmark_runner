@@ -7,6 +7,7 @@ use std::io;
 use std::ops::Deref;
 use std::path::*;
 use std::sync::Arc;
+use derive_new::*;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Solver {
@@ -87,6 +88,7 @@ pub struct BenchRunConf<A> {
     pub(crate) solver: Arc<Solver>,
 }
 
+
 impl<'a> AsRef<OsStr> for Args<'a> {
     fn as_ref(&self) -> &OsStr {
         match self {
@@ -140,11 +142,11 @@ impl<A> fmt::Display for BenchRunConf<A> {
     }
 }
 
-#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize,new)]
 pub struct JobConfig<A> {
-    pub(crate) solvers: Vec<Arc<Solver>>,
-    pub(crate) benchmarks: Vec<Arc<Annotated<Benchmark, A>>>,
-    pub(crate) timeout: Duration,
+    pub solvers: Vec<Arc<Solver>>,
+    pub benchmarks: Vec<Arc<Annotated<Benchmark, A>>>,
+    pub timeout: Duration,
 }
 
 impl<A> JobConfig<A> {

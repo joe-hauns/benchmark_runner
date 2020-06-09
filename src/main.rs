@@ -26,5 +26,5 @@ impl Postprocessor for NopPostprocessor {
 }
 
 fn main() -> Result<()> {
-    benchmark_runner::main(NopPostprocessor, Opts::parse())
+    benchmark_runner::main_with_opts(NopPostprocessor, Opts::parse())
 }

@@ -122,7 +122,7 @@ fn test_all_ran() {
         let benchmarks: Vec<_> = benchmarks.into_iter().map(|p|p.canonicalize().unwrap()).collect();
         let solvers: Vec<_>  = solvers.into_iter().map(|p|p.canonicalize().unwrap()).collect();
 
-        let proc = main_with_opts(TestPostpro ::new(
+        let proc = run_with_opts(TestPostpro ::new(
             // benchmarks.iter().map(|p|Benchmark::new(p.clone())).collect(),
             // solvers.iter().map(|p|Solver::new(p.clone())).collect(),
         ), opts).unwrap();

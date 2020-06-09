@@ -5,6 +5,7 @@ mod service;
 
 pub use ui::*;
 pub use dto::*;
+pub use dao::DaoConfig;
 use service::*;
 
 use anyhow::Result;
@@ -24,6 +25,7 @@ use std::time::*;
 use clap::*;
 use thiserror::Error as ThisError;
 use wait_timeout::ChildExt;
+use std::convert::*;
 
 #[macro_export]
 macro_rules! log_err {
@@ -107,44 +109,61 @@ pub struct ServiceConfig {
 }
 
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct ApplicationConfig<A> {
-    service: ServiceConfig,
-    dao: DaoConfig,
-    job: JobConfig<A>,
+pub struct ApplicationConfig<A> {
+    pub service: ServiceConfig,
+    pub dao: DaoConfig,
+    pub job: JobConfig<A>,
 }
+
+pub fn benchmarks_from_dir<P>(bench_dir: &PathBuf, postpro: &P) -> Result<Vec<Arc<Annotated<Benchmark, P::BAnnot>>>>
+where P: Postprocessor
+{
+    let benchmarks = from_file_or_dir(&bench_dir, |file| Ok(Benchmark { file }))?;
+    let ui = Ui::new("Annotating", benchmarks.len());
+
+    benchmarks
+        .into_iter()
+        .map(|b| {
+            let res = postpro.annotate_benchark(&b)?;
+            ui.progress();
+            Ok(Arc::new(Annotated(b, res)))
+        })
+        .collect::<Result<_>>()
+        .context("failed to annotated benchmarks")
+}
+
+fn from_file_or_dir<A, F>(d: &PathBuf, parse: F) -> Result<Vec<A>>
+where
+    // A: TryFrom<PathBuf, Error = anyhow::Error>,
+    F: Fn(PathBuf) -> Result<A, anyhow::Error>,
+{
+    if d.is_dir() {
+        process_results(
+            read_dir(d).with_context(|| format!("failed to open directory: {}", d.display()))?,
+            |files| {
+                files
+                    .map(|f| -> Result<A> {
+                        let path = f.path().canonicalize().with_context(|| {
+                            format!("failed to canonize: {}", f.path().display())
+                        })?;
+                        parse(path).with_context(|| {
+                            format!("failed to parse path: {}", f.path().display())
+                        })
+                    })
+                    .collect::<Result<_>>()
+            },
+        )
+        .with_context(|| format!("failed to read directory: {}", d.display()))?
+    } else {
+        Ok(vec![ parse(d.clone())? ])
+    }
+}
+
 
 fn validate_opts<P: Postprocessor>(
     postpro: &P,
     opts: Opts,
 ) -> Result<ApplicationConfig<P::BAnnot>> {
-
-    fn from_file_or_dir<A, F>(d: &PathBuf, parse: F) -> Result<Vec<A>>
-    where
-        // A: TryFrom<PathBuf, Error = anyhow::Error>,
-        F: Fn(PathBuf) -> Result<A, anyhow::Error>,
-    {
-        if d.is_dir() {
-            process_results(
-                read_dir(d).with_context(|| format!("failed to open directory: {}", d.display()))?,
-                |files| {
-                    files
-                        .map(|f| -> Result<A> {
-                            let path = f.path().canonicalize().with_context(|| {
-                                format!("failed to canonize: {}", f.path().display())
-                            })?;
-                            parse(path).with_context(|| {
-                                format!("failed to parse path: {}", f.path().display())
-                            })
-                        })
-                        .collect::<Result<_>>()
-                },
-            )
-            .with_context(|| format!("failed to read directory: {}", d.display()))?
-        } else {
-            Ok(vec![ parse(d.clone())? ])
-        }
-    }
-
     let Opts {
         bench_dir,
         solver_dir,
@@ -157,25 +176,21 @@ fn validate_opts<P: Postprocessor>(
         service: ServiceConfig { threads, },
         dao: DaoConfig { outdir, },
         job: JobConfig {
-            solvers: from_file_or_dir(&solver_dir, |file| Ok(Arc::new(Solver { file })))?,
-            benchmarks: {
-                let benchmarks = from_file_or_dir(&bench_dir, |file| Ok(Benchmark { file }))?;
-                let ui = Ui::new("Annotating", benchmarks.len());
-
-                benchmarks
-                    .into_iter()
-                    .map(|b| {
-                        let res = postpro.annotate_benchark(&b)?;
-                        ui.progress();
-                        Ok(Arc::new(Annotated(b, res)))
-                    })
-                    .collect::<Result<_>>()
-                    .context("failed to annotated benchmarks")?
-            },
+            solvers: from_file_or_dir(&solver_dir, |file| Ok(Arc::new(Solver::try_from(file)?)))?,
+            benchmarks: benchmarks_from_dir(&bench_dir, postpro)?,
             timeout: Duration::from_secs(timeout),
         },
     })
 }
+
+impl TryFrom<PathBuf> for Solver {
+    type Error = anyhow::Error;
+    fn try_from(file: PathBuf) -> Result<Self> {
+        //TODO check if it's a file, and if it's executable
+        Ok(Solver { file })
+    }
+}
+
 pub struct PostproIOAccess(PathBuf);
 
 impl PostproIOAccess {
@@ -210,18 +225,6 @@ pub trait Postprocessor {
         iter: impl IntoIterator<Item = (BenchRunConf<Self::BAnnot>, Self::Mapped)>,
     ) -> Result<Self::Reduced>;
 }
-
-pub fn main<P>(post: P, opts: Opts) -> Result<()>
-where
-    P: Postprocessor + Sync,
-    <P as Postprocessor>::BAnnot: Clone,
-{
-    match main_with_opts(post, opts) {
-        Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
-        Err(Error::Anyhow(e)) => Err(e),
-    }
-}
-
 fn set_thread_cnt(n: usize) -> Result<()> {
     let r = rayon::ThreadPoolBuilder::new()
         .num_threads(n)
@@ -277,16 +280,16 @@ pub enum Error {
     TermSignal(#[from] TermSignal),
 }
 
-fn main_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
+fn run_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
 where
     P: Postprocessor + Sync,
     <P as Postprocessor>::BAnnot: Clone,
 {
     let conf = validate_opts(&post, opts)?;
-    main_with_conf(post, conf)
+    run_with_conf(post, conf)
 }
 
-fn main_with_conf<P>(post: P, conf: ApplicationConfig<P::BAnnot>) -> Result<P::Reduced, Error>
+fn run_with_conf<P>(post: P, conf: ApplicationConfig<P::BAnnot>) -> Result<P::Reduced, Error>
 where
     P: Postprocessor + Sync,
     <P as Postprocessor>::BAnnot: Clone,
@@ -302,3 +305,29 @@ where
     service.run(job, &dao, &post)
 
 }
+
+pub fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
+where
+    P: Postprocessor + Sync,
+    <P as Postprocessor>::BAnnot: Clone,
+{
+    match run_with_opts(post, opts) {
+        Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
+        Err(Error::Anyhow(e)) => Err(e),
+    }
+}
+
+
+
+pub fn main_with_conf<P>(post: P, conf: ApplicationConfig<P::BAnnot>) -> Result<()>
+where
+    P: Postprocessor + Sync,
+    <P as Postprocessor>::BAnnot: Clone,
+{
+    match run_with_conf(post, conf) {
+        Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
+        Err(Error::Anyhow(e)) => Err(e),
+    }
+}
+
+
