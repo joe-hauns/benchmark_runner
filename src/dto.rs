@@ -75,6 +75,9 @@ impl<A, B> Deref for Annotated<A, B> {
 }
 
 impl<A, B> Annotated<A, B> {
+    pub fn annotated(&self) -> &A {
+        &self.0
+    }
     pub fn annotation(&self) -> &B {
         &self.1
     }
