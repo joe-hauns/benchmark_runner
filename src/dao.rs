@@ -2,11 +2,17 @@ use super::*;
 use anyhow::Result;
 use std::io::*;
 
-pub(crate) fn create<A>(opts: &Opts) -> Result<impl Dao<A>>
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub struct DaoConfig {
+    pub outdir: PathBuf
+}
+
+pub(crate) fn create<A>(conf: DaoConfig) -> Result<impl Dao<A>>
 where
     A: Serialize + DeserializeOwned,
 {
-    let outdir = opts.outdir.clone();
+    //TODO get rid of this clone
+    let outdir = conf.outdir;
     create_dir_all(&outdir)
         .with_context(|| format!("failed to create outdir: {}", outdir.display()))?;
     Ok(DaoImpl { outdir })

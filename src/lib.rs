@@ -1,17 +1,21 @@
 mod dao;
 mod dto;
+mod ui;
+mod service;
+
+pub use ui::*;
+pub use dto::*;
+use service::*;
 
 use anyhow::Result;
 use anyhow::*;
 use crossbeam_channel::*;
 use dao::*;
-pub use dto::*;
 use itertools::*;
 use rayon::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Arguments as FormatArgs;
-use std::fs;
 use std::fs::*;
 use std::io;
 use std::path::*;
@@ -21,6 +25,7 @@ use clap::*;
 use thiserror::Error as ThisError;
 use wait_timeout::ChildExt;
 
+#[macro_export]
 macro_rules! log_err {
     ($e:expr $(, $fmt:tt)*) => {{ match $e {
         Err(e) => {
@@ -32,6 +37,7 @@ macro_rules! log_err {
     } }}
 }
 
+#[macro_export]
 macro_rules! log_err_ {
     ($e:expr $(, $fmt:tt)+) => { { let _ = log_err!($e $(, $fmt)+); } }
 }
@@ -85,40 +91,33 @@ pub struct Opts {
     )]
     pub outdir: PathBuf,
 
-    /// only run post processor, not benchmarks
-    #[clap(short = "p", long = "post")]
-    pub only_post_process: bool,
+    // /// only run post processor, not benchmarks
+    // #[clap(short = "p", long = "post")]
+    // pub only_post_process: bool,
 
     /// How many threads shall be ran in parallel? [default: number of physical cpus]
     #[clap(short = "t", long = "threads")]
     pub num_threads: Option<usize>,
 }
 
+//TODO create sercice module
+#[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub struct ServiceConfig {
+    pub threads: Option<usize>,
+}
+
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct ApplicationConfig<A> {
-    opts: Opts,
-    job_conf: Arc<JobConfig<A>>,
-}
-
-impl<A> ApplicationConfig<A> {
-    fn postpro_dir(&self) -> Result<PathBuf> {
-        let dir = self.opts.outdir.join("post_proc").join(format!("{}", self.opts.timeout));
-        create_dir_all(&dir)
-            .with_context(|| format!("failed to create postpro dir: {}", dir.display()))?;
-        Ok(dir)
-    }
-}
-
-use indicatif::*;
-
-pub struct Ui {
-    bar: ProgressBar,
+    service: ServiceConfig,
+    dao: DaoConfig,
+    job: JobConfig<A>,
 }
 
 fn validate_opts<P: Postprocessor>(
     postpro: &P,
     opts: Opts,
 ) -> Result<ApplicationConfig<P::BAnnot>> {
+
     fn from_file_or_dir<A, F>(d: &PathBuf, parse: F) -> Result<Vec<A>>
     where
         // A: TryFrom<PathBuf, Error = anyhow::Error>,
@@ -146,11 +145,21 @@ fn validate_opts<P: Postprocessor>(
         }
     }
 
+    let Opts {
+        bench_dir,
+        solver_dir,
+        outdir,
+        num_threads: threads,
+        timeout,
+    } = opts;
+
     Ok(ApplicationConfig {
-        job_conf: Arc::new(JobConfig {
-            solvers: from_file_or_dir(&opts.solver_dir, |file| Ok(Arc::new(Solver { file })))?,
+        service: ServiceConfig { threads, },
+        dao: DaoConfig { outdir, },
+        job: JobConfig {
+            solvers: from_file_or_dir(&solver_dir, |file| Ok(Arc::new(Solver { file })))?,
             benchmarks: {
-                let benchmarks = from_file_or_dir(&opts.bench_dir, |file| Ok(Benchmark { file }))?;
+                let benchmarks = from_file_or_dir(&bench_dir, |file| Ok(Benchmark { file }))?;
                 let ui = Ui::new("Annotating", benchmarks.len());
 
                 benchmarks
@@ -163,38 +172,10 @@ fn validate_opts<P: Postprocessor>(
                     .collect::<Result<_>>()
                     .context("failed to annotated benchmarks")?
             },
-            timeout: Duration::from_secs(opts.timeout),
-        }),
-        opts,
+            timeout: Duration::from_secs(timeout),
+        },
     })
 }
-
-impl Ui {
-    pub fn new(job: &str, cnt: usize) -> Self {
-        let bar = ProgressBar::new(cnt as u64);
-        bar.set_style(ProgressStyle::default_bar()
-            .template("{spinner} {msg} [{elapsed_precise}] [{wide_bar:.green/fg}] {pos:>7}/{len:7} (left: {eta_precise})")
-            .progress_chars("=> "));
-        bar.set_message(job);
-        bar.enable_steady_tick(100);
-        Ui { bar }
-    }
-
-    pub fn println(&self, m: impl std::fmt::Display) {
-        self.bar.println(m.to_string());
-    }
-
-    pub fn progress(&self) {
-        self.bar.inc(1);
-    }
-}
-
-impl Drop for Ui {
-    fn drop(&mut self) {
-        self.bar.finish();
-    }
-}
-
 pub struct PostproIOAccess(PathBuf);
 
 impl PostproIOAccess {
@@ -225,7 +206,7 @@ pub trait Postprocessor {
     fn map(&self, r: &BenchRunResult<Self::BAnnot>) -> Result<Self::Mapped>;
     fn reduce(
         &self,
-        job_conf: &JobConfig<Self::BAnnot>,
+        job: &JobConfig<Self::BAnnot>,
         iter: impl IntoIterator<Item = (BenchRunConf<Self::BAnnot>, Self::Mapped)>,
     ) -> Result<Self::Reduced>;
 }
@@ -319,132 +300,21 @@ where
     P: Postprocessor + Sync,
     <P as Postprocessor>::BAnnot: Clone,
 {
-    setup_ctrlc();
+    let config = validate_opts(&post, opts)?;
 
-    let config = Arc::new(validate_opts(&post, opts)?);
+    let ApplicationConfig {
+        job,
+        dao,
+        service,
+    } = config;
 
-    println!("output dir: {}", config.opts.outdir.display());
-    println!("cpus: {}", num_cpus::get_physical());
+    let dao = dao::create(dao)?;
+    let service = service::create(service)?;
+    service.run(job, &dao, &post)
 
-    log_err_!(
-        set_thread_cnt(
-            config
-                .opts
-                .num_threads
-                .unwrap_or_else(|| num_cpus::get_physical())
-        ),
-        "failed to set number of threads"
-    );
-    let dao = dao::create(&config.opts)?;
-
-    let (mut done, todo): (Vec<_>, Vec<_>) = {
-        let bs = &config.job_conf.benchmarks[..];
-        let cs = &config.job_conf.solvers[..];
-        let ui = Ui::new("Reading old results", bs.len() * cs.len());
-        let config = &config;
-        bs.par_iter()
-            .flat_map(move |benchmark| {
-                cs.par_iter().map(move |solver| BenchRunConf {
-                    job: config.job_conf.clone(),
-                    benchmark: benchmark.clone(),
-                    solver: solver.clone(),
-                })
-            })
-            .partition_map(|c| {
-                let result = match dao.read_result(&c) {
-                    Ok(Some(res)) => Either::Left(res),
-                    Ok(None) => Either::Right(c),
-                    Err(e) => {
-                        ui.println(format_args!("failed to read result: {:#}", e));
-                        Either::Right(c)
-                    }
-                };
-                ui.progress();
-                result
-            })
-    };
-
-    let remove_files =
-        |ui: &Ui, conf: &BenchRunConf<P::BAnnot>, reason: FormatArgs| match dao
-            .remove_result(&conf, reason)
-        {
-            Ok(()) => ui.println(format_args!("removed output files for {}", conf)),
-            Err(e) => ui.println(format_args!("failed to remove output files: {:#}", e)),
-        };
-
-    if !config.opts.only_post_process {
-        let ui = Ui::new("Benchmarking", todo.len());
-        done.par_extend(todo[..].into_par_iter().filter_map(|conf| {
-            if shall_terminate() {
-                None
-            } else {
-                let result = match run(&conf) {
-                    Ok(x) => {
-                        if let Err(e) = dao.store_result(&x) {
-                            eprintln!("failed to store result: {:#}", e);
-                        }
-                        Some(x)
-                    }
-                    Err(Error::TermSignal(TermSignal)) => None,
-                    Err(e) => {
-                        remove_files(&ui, &conf, format_args!("failed to run {}: {:#}", conf, e));
-                        None
-                    }
-                };
-                ui.progress();
-                result
-            }
-        }));
-    }
-
-    if shall_terminate() {
-        return Err(Error::TermSignal(TermSignal));
-    }
-
-    let mapped: Vec<_> = {
-        let ui = Ui::new("Mapping", done.len());
-
-        done.par_iter()
-            .filter_map(|x| {
-                Some({
-                    let res = match post.map(&x) {
-                        Ok(mapped) => (x.run.clone(), mapped),
-                        Err(e) => {
-                            remove_files(
-                                &ui,
-                                &x.run,
-                                format_args!("failed to prostprocess: {:#}", e),
-                            );
-                            return None;
-                        }
-                    };
-                    ui.progress();
-                    if shall_terminate() {
-                        Err(TermSignal)
-                    } else {
-                        Ok(res)
-                    }
-                })
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
-
-    let reduced = post.reduce(&config.job_conf, mapped)?;
-
-    if shall_terminate() {
-        return Err(Error::TermSignal(TermSignal));
-    }
-
-    let dir = config.postpro_dir()?;
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create directory: {}", dir.display()))?;
-    println!("writing to output dir: {}", dir.display());
-    // TODO serialize summary to file
-    reduced.write_summary(std::io::stdout().lock())?;
-    Ok(reduced)
 }
 
-fn run<A>(run: &BenchRunConf<A>) -> Result<BenchRunResult<A>, Error> 
+fn run_command<A>(run: &BenchRunConf<A>) -> Result<BenchRunResult<A>, Error> 
 where A: Clone
 {
     use std::io::Read;

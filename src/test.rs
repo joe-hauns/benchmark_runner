@@ -81,7 +81,7 @@ fn test_all_ran() {
             bench_dir: bench_dir.path().to_owned(),
             solver_dir: solver_dir.path().to_owned(),
             outdir: out_dir.path().to_owned(),
-            only_post_process: false,
+            // only_post_process: false,
             timeout,
             num_threads: None,
         };
