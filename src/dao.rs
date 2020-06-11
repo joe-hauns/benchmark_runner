@@ -1,40 +1,66 @@
 use super::*;
 use anyhow::Result;
 use std::io::*;
+use std::fs;
 
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct DaoConfig {
     pub outdir: PathBuf
 }
 
-pub(crate) fn create<A>(conf: DaoConfig) -> Result<impl Dao<A>>
-where
-    A: Serialize + DeserializeOwned,
+pub(crate) fn create<P>(conf: DaoConfig) -> Result<impl Dao<P>>
+where P: Postprocessor,
 {
     //TODO get rid of this clone
     let outdir = conf.outdir;
-    create_dir_all(&outdir)
-        .with_context(|| format!("failed to create outdir: {}", outdir.display()))?;
+    create_dir_all(&outdir)?;
     Ok(DaoImpl { outdir })
 }
 
-pub(crate) trait Dao<A> {
-    fn store_result(&self, run: &BenchRunResult<A>) -> Result<()>;
-    fn read_result(&self, run: &BenchRunConf<A>) -> Result<Option<BenchRunResult<A>>>;
-    fn remove_result<R: std::fmt::Display>(&self, run: &BenchRunConf<A>, reason: R) -> Result<()>;
+pub(crate) trait Dao<P> 
+where P: Postprocessor
+{
+    fn store_result(&self, run: &BenchRunResult<P>) -> Result<()>;
+    fn read_result(&self, run: &BenchRunConf<P>) -> Result<Option<BenchRunResult<P>>>;
+    fn remove_result<R: std::fmt::Display>(&self, run: &BenchRunConf<P>, reason: R) -> Result<()>;
 }
 
+
 #[derive(Serialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct BenchRunResultMeta<'a, A> {
-    run: &'a BenchRunConf<A>,
+// #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+struct BenchRunResultMeta<'a, P> 
+where P: Postprocessor,
+{
+    #[serde(bound(serialize = "BenchRunConf<P>: Serialize"))]
+    run: &'a BenchRunConf<P>,
     status: &'a BenchmarkStatus,
     time: &'a Duration,
     exit_status: &'a Option<i32>,
 }
 
+// impl<'a,P> serde::Serialize for BenchRunResultMeta<'a, P> 
+//     where P: Postprocessor,
+// {
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: serde::Serializer,
+//     {
+//         use serde::ser::*;
+//         let mut map = serializer.serialize_map(Some(4))?;
+//         map.serialize_entry("run", self.run)?;
+//         map.serialize_entry("status", self.status)?;
+//         map.serialize_entry("time", self.time)?;
+//         map.serialize_entry("exit_status", self.exit_status)?;
+//         map.end()
+//     }
+// }
+
 #[derive(Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct BenchRunResultMetaOwned<A> {
-    run: BenchRunConf<A>,
+struct BenchRunResultMetaOwned<P> 
+where P: Postprocessor,
+{
+    #[serde(bound(deserialize = "BenchRunConf<P>: DeserializeOwned"))]
+    run: BenchRunConf<P>,
     status: BenchmarkStatus,
     time: Duration,
     exit_status: Option<i32>,
@@ -46,52 +72,48 @@ pub struct DaoImpl {
 }
 
 impl DaoImpl {
-    fn outdir<A>(&self, run: &BenchRunConf<A>) -> PathBuf
-    where
-        A: Serialize + DeserializeOwned,
+    fn outdir<P>(&self, run: &BenchRunConf<P>) -> PathBuf
+    where P: Postprocessor,
     {
         let mut path = PathBuf::from(&self.outdir);
-        path.push(run.solver.file.file_name().unwrap());
+        path.push(format!("{}", run.solver.id()));
         path.push(format!("{}", run.job.timeout.as_secs()));
         path.push(run.benchmark.file.file_name().unwrap());
         path
     }
-    fn meta_json<A>(&self, run: &BenchRunConf<A>) -> PathBuf
+    fn meta_json<P>(&self, run: &BenchRunConf<P>) -> PathBuf
     where
-        A: Serialize + DeserializeOwned,
+        P: Postprocessor
     {
         self.outdir(run).join("meta.json")
     }
 
-    fn stdout_txt<A>(&self, run: &BenchRunConf<A>) -> PathBuf
+    fn stdout_txt<P>(&self, run: &BenchRunConf<P>) -> PathBuf
     where
-        A: Serialize + DeserializeOwned,
+        P: Postprocessor
     {
         self.outdir(run).join("stdout.txt")
     }
 
-    fn stderr_txt<A>(&self, run: &BenchRunConf<A>) -> PathBuf
+    fn stderr_txt<P>(&self, run: &BenchRunConf<P>) -> PathBuf
     where
-        A: Serialize + DeserializeOwned,
+        P: Postprocessor
     {
         self.outdir(run).join("stderr.txt")
     }
 }
 
-impl<A> Dao<A> for DaoImpl
+impl<P> Dao<P> for DaoImpl
 where
-    A: Serialize + DeserializeOwned,
+    P: Postprocessor
 {
-    fn remove_result<R: std::fmt::Display>(&self, run: &BenchRunConf<A>, reason: R) -> Result<()> {
+    fn remove_result<R: std::fmt::Display>(&self, run: &BenchRunConf<P>, reason: R) -> Result<()> {
         let dir = self.outdir(run);
         let err_dir = dir.with_extension("err");
         if err_dir.exists() {
-            remove_dir_all(&err_dir)
-                .with_context(|| format!("failed to remove directory: {}", err_dir.display()))?;
+            remove_dir_all(&err_dir)?;
         }
-        rename(&dir, &err_dir).with_context(|| {
-            format!("failed move dir {} -> {}", dir.display(), err_dir.display())
-        })?;
+        rename(&dir, &err_dir)?;
         // ui.println(&reason);
         // ui.println(format!(
         //     "moving result to {} (may be deleted in another run)",
@@ -99,14 +121,15 @@ where
         // ));
         let reason_file = err_dir.join("error_reason.txt");
         if let Err(e) =
-            File::create(reason_file).and_then(|mut reason_file| write!(reason_file, "{}", reason))
+            write_vec(&reason_file, format!("{}", reason).as_ref())
+            // create_file(reason_file).and_then(|mut reason_file| write!(reason_file, "{}", reason).co?)
         {
             eprintln!("failed to write reason for file removal: {}", e);
             eprintln!("reason was: {}", reason);
         }
         Ok(())
     }
-    fn store_result(&self, run: &BenchRunResult<A>) -> Result<()> {
+    fn store_result(&self, run: &BenchRunResult<P>) -> Result<()> {
         let BenchRunResult {
             run,
             status,
@@ -117,8 +140,7 @@ where
         } = run;
 
         let outdir = self.outdir(run);
-        create_dir_all(&outdir)
-            .with_context(|| format!("failed to craete dir: {}", outdir.display()))?;
+        create_dir_all(&outdir)?;
 
         write_json(
             self.meta_json(run),
@@ -134,7 +156,7 @@ where
         Ok(())
     }
 
-    fn read_result(&self, run: &BenchRunConf<A>) -> Result<Option<BenchRunResult<A>>> {
+    fn read_result(&self, run: &BenchRunConf<P>) -> Result<Option<BenchRunResult<P>>> {
         let outdir = self.outdir(run);
         if !outdir.exists() {
             return Ok(None);
@@ -161,23 +183,59 @@ where
 }
 
 fn read_vec(path: &PathBuf) -> Result<Vec<u8>> {
-    read(path).with_context(|| format!("failed to read file: {}", path.display()))
+    fs::read(path).with_context(|| format!("failed to read file: {}", path.display()))
 }
 
-fn write_vec(path: &PathBuf, vec: &Vec<u8>) -> Result<()> {
-    write(path, vec).with_context(|| format!("failed to write file: {}", path.display()))
+fn write_vec(path: &PathBuf, vec: &[u8]) -> Result<()> {
+    fs::write(path, vec).with_context(|| format!("failed to write file: {}", path.display()))
 }
 
 fn write_json<A: Serialize>(path: PathBuf, value: &A) -> Result<()> {
     let file =
-        File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
+        create_file(&path).with_context(|| format!("failed to create {}", path.display()))?;
     Ok(serde_json::to_writer_pretty(file, &value)
         .with_context(|| format!("failed to write json to {}", path.display()))?)
 }
 
 fn read_json<A: DeserializeOwned>(f: PathBuf) -> Result<A> {
     Ok(serde_json::from_reader(
-        File::open(&f).with_context(|| format!("failed to open {}", f.display()))?,
+        create_file(&f).with_context(|| format!("failed to open {}", f.display()))?,
     )
     .with_context(|| format!("failed to read {}", f.display()))?)
 }
+
+fn create_file<P>(p: P) -> Result<fs::File> 
+    where P: AsRef<Path>
+{
+    let p = p.as_ref();
+    fs::File::create(p)
+        .with_context(||format!("failed to create file {}", p.display()))
+}
+
+
+fn remove_dir_all<P>(p: P) -> Result<()> 
+    where P: AsRef<Path> 
+{
+    let p = p.as_ref();
+    fs::remove_dir_all(p)
+        .with_context(||format!("failed to remove dir {}", p.display()))
+}
+
+fn create_dir_all<P>(p: P) -> Result<()> 
+    where P: AsRef<Path> 
+{
+    let p = p.as_ref();
+    fs::create_dir_all(p)
+        .with_context(||format!("failed to create dirs {}", p.display()))
+}
+
+fn rename<P, Q>(p: P, q: Q) -> Result<()> 
+    where P: AsRef<Path> ,
+          Q: AsRef<Path> ,
+{
+    let p = p.as_ref();
+    let q = q.as_ref();
+    fs::rename(p, q)
+        .with_context(||format!("failed to rename {} to {}", p.display(), q.display()))
+}
+

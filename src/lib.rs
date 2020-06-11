@@ -1,8 +1,10 @@
 mod dao;
+mod interface;
 mod dto;
 mod ui;
 mod service;
 
+pub use interface::*;
 pub use ui::*;
 pub use dto::*;
 pub use dao::DaoConfig;
@@ -17,7 +19,8 @@ use rayon::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Arguments as FormatArgs;
-use std::fs::*;
+use std::fs;
+use std::fs::DirEntry;
 use std::io;
 use std::path::*;
 use std::sync::*;
@@ -109,10 +112,12 @@ pub struct ServiceConfig {
 }
 
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct ApplicationConfig<A> {
+pub struct ApplicationConfig<P> 
+    where P: Postprocessor
+{
     pub service: ServiceConfig,
     pub dao: DaoConfig,
-    pub job: JobConfig<A>,
+    pub job: JobConfig<P>,
 }
 
 pub fn benchmarks_from_dir<P>(bench_dir: &PathBuf, postpro: &P) -> Result<Vec<Arc<Annotated<Benchmark, P::BAnnot>>>>
@@ -163,7 +168,10 @@ where
 fn validate_opts<P: Postprocessor>(
     postpro: &P,
     opts: Opts,
-) -> Result<ApplicationConfig<P::BAnnot>> {
+) -> Result<ApplicationConfig<P>> 
+    where P: Postprocessor,
+          P::Solver: FromDir,
+{
     let Opts {
         bench_dir,
         solver_dir,
@@ -176,69 +184,57 @@ fn validate_opts<P: Postprocessor>(
         service: ServiceConfig { threads, },
         dao: DaoConfig { outdir, },
         job: JobConfig {
-            solvers: from_file_or_dir(&solver_dir, |file| Ok(Arc::new(Solver::try_from(file)?)))?,
+            solvers: FromDir::from_dir(&solver_dir)?,
             benchmarks: benchmarks_from_dir(&bench_dir, postpro)?,
             timeout: Duration::from_secs(timeout),
         },
     })
 }
 
-impl TryFrom<PathBuf> for Solver {
-    type Error = anyhow::Error;
-    fn try_from(file: PathBuf) -> Result<Self> {
-        //TODO check if it's a file, and if it's executable
-        Ok(Solver { file })
+
+impl<A> FromDir for Arc<A> 
+    where A: FromDir
+{
+    fn from_dir<P>(dir: P) -> Result<Self> 
+        where P: AsRef<Path>,
+    {
+        Ok(Arc::new(FromDir::from_dir(dir)?))
     }
 }
 
-pub struct PostproIOAccess(PathBuf);
 
-impl PostproIOAccess {
-    pub fn benchmark_out(&self, s: &Benchmark) -> io::Result<impl io::Write> {
-        File::create(self.0.join(s.file()))
-    }
-    pub fn solver_out(&self, s: &Solver) -> io::Result<impl io::Write> {
-        File::create(self.0.join(s.file()))
-    }
-    pub fn global_out(&self) -> io::Result<impl io::Write> {
-        File::create(self.0.join("summary"))
+impl<A> FromDir for Vec<A> 
+    where A: FromDir
+{
+    fn from_dir<P>(dir: P) -> Result<Self> 
+        where P: AsRef<Path>,
+    {
+        process_results(read_dir(&dir)?, |d| {
+            d.map(|d: DirEntry| A::from_dir(d.path())).collect::<Result<Vec<A>>>()
+        })?
     }
 }
 
-pub trait Summerizable {
-    fn write_summary<W>(&self, out: W) -> Result<()>
+fn read_dir<'a, P>(path: &'a P) -> Result<impl Iterator<Item = Result<DirEntry>> + 'a>
+where
+    P: AsRef<Path> + 'a,
+{
+    Ok(fs::read_dir(&path)
+        .with_context(|| format!("failed to read dir: {}", path.as_ref().display()))?
+        .map(move |x| {
+            x.with_context(move || {
+                format!("failed to read path entry: {}", path.as_ref().display())
+            })
+        }))
+}
+
+pub trait FromDir {
+    fn from_dir<P>(dir: P) -> Result<Self>
     where
-        W: io::Write;
+        P: AsRef<Path>,
+        Self: Sized;
 }
 
-pub trait Postprocessor {
-    type Mapped: Send + Sync;
-    type Reduced: Serialize + DeserializeOwned + Summerizable;
-    /// Benchmark Annotation
-    type BAnnot: Serialize + DeserializeOwned + Send + Sync;
-
-    fn annotate_benchark(&self, b: &Benchmark) -> Result<Self::BAnnot>;
-    fn map(&self, r: &BenchRunResult<Self::BAnnot>) -> Result<Self::Mapped>;
-    fn reduce(
-        &self,
-        job: &JobConfig<Self::BAnnot>,
-        iter: impl IntoIterator<Item = (BenchRunConf<Self::BAnnot>, Self::Mapped)>,
-    ) -> Result<Self::Reduced>;
-}
-fn set_thread_cnt(n: usize) -> Result<()> {
-    let r = rayon::ThreadPoolBuilder::new()
-        .num_threads(n)
-        .build_global();
-
-    if cfg!(test) {
-        /* ignore error since tests are multithreaded */
-        let _ = r;
-    } else {
-        /* raise error in main method */
-        r?;
-    }
-    Ok(())
-}
 
 #[derive(ThisError, Debug)]
 #[error("received termination signal")]
@@ -283,13 +279,14 @@ pub enum Error {
 fn run_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
 where
     P: Postprocessor + Sync,
+    P::Solver: FromDir,
     <P as Postprocessor>::BAnnot: Clone,
 {
     let conf = validate_opts(&post, opts)?;
     run_with_conf(post, conf)
 }
 
-fn run_with_conf<P>(post: P, conf: ApplicationConfig<P::BAnnot>) -> Result<P::Reduced, Error>
+fn run_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> Result<P::Reduced, Error>
 where
     P: Postprocessor + Sync,
     <P as Postprocessor>::BAnnot: Clone,
@@ -309,6 +306,7 @@ where
 pub fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
 where
     P: Postprocessor + Sync,
+    P::Solver: FromDir,
     <P as Postprocessor>::BAnnot: Clone,
 {
     match run_with_opts(post, opts) {
@@ -319,7 +317,7 @@ where
 
 
 
-pub fn main_with_conf<P>(post: P, conf: ApplicationConfig<P::BAnnot>) -> Result<()>
+pub fn main_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> Result<()>
 where
     P: Postprocessor + Sync,
     <P as Postprocessor>::BAnnot: Clone,

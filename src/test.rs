@@ -1,40 +1,47 @@
 use crate::*;
 use std::fs;
+use std::fs::*;
+use std::ffi::*;
 use std::os::unix::fs::PermissionsExt;
 use std::collections::*;
+use crate::interface::solvers::Script;
 
 struct TestPostpro;
 
 impl TestPostpro {
-    fn new(
-    // benchmarks: Vec<Benchmark>,
-    // solvers: Vec<Solver>,
-        ) -> Self {
-        TestPostpro {
-            // benchmarks,solvers,
-        }
+    fn new() -> Self {
+        TestPostpro { }
     }
 }
 
-impl<A> Summerizable for TestReduced<A> {
+impl<P> Summerizable for TestReduced<P> 
+    where P: Postprocessor
+{
     fn write_summary<W: io::Write>(&self, _: W) -> Result<()> {Ok(())}
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct TestReduced<A>(JobConfig<()>, Vec<(BenchRunConf<A>, BenchRunResult<A>)>);
+struct TestReduced<P>(
+    #[serde(bound(serialize = "P: Postprocessor", deserialize = "P: Postprocessor"))]
+    JobConfig<P>, 
+    #[serde(bound(serialize = "P: Postprocessor", deserialize = "P: Postprocessor"))]
+    Vec<(BenchRunConf<P>, BenchRunResult<P>)>)
+    where P: Postprocessor
+     ;
 
 
 impl Postprocessor for TestPostpro {
-    type Mapped = BenchRunResult<Self::BAnnot>;
-    type Reduced = TestReduced<Self::BAnnot>;
+    type Solver = Script;
+    type Mapped = BenchRunResult<Self>;
+    type Reduced = TestReduced<Self>;
     type BAnnot = ();
     fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BAnnot> { Ok(()) }
 
-    fn map(&self, r: &BenchRunResult<Self::BAnnot>) -> Result<Self::Mapped> {
+    fn map(&self, r: &BenchRunResult<Self>) -> Result<Self::Mapped> {
         Ok(r.clone())
     }
 
-    fn reduce(&self, conf: &JobConfig<Self::BAnnot>, iter: impl IntoIterator<Item=(BenchRunConf<Self::BAnnot>, Self::Mapped)>) -> Result<Self::Reduced> {
+    fn reduce(&self, conf: &JobConfig<Self>, iter: impl IntoIterator<Item=(BenchRunConf<Self>, Self::Mapped)>) -> Result<Self::Reduced> {
         Ok(TestReduced(conf.clone(), iter.into_iter().collect()))
     }
 
@@ -122,13 +129,7 @@ fn test_all_ran() {
         let benchmarks: Vec<_> = benchmarks.into_iter().map(|p|p.canonicalize().unwrap()).collect();
         let solvers: Vec<_>  = solvers.into_iter().map(|p|p.canonicalize().unwrap()).collect();
 
-        let proc = run_with_opts(TestPostpro ::new(
-            // benchmarks.iter().map(|p|Benchmark::new(p.clone())).collect(),
-            // solvers.iter().map(|p|Solver::new(p.clone())).collect(),
-        ), opts).unwrap();
-
-        // let proc_benchmarks = proc.iter().map(|x|x.benchmark());
-        // let proc_solvers    = proc.iter().map(|x|x.solver());
+        let proc = run_with_opts(TestPostpro ::new(), opts).unwrap();
 
         assert_eq!(benchmarks.len() * solvers.len(), proc.1.len());
         itertools::assert_equal(
@@ -137,7 +138,11 @@ fn test_all_ran() {
             );
         itertools::assert_equal(
                 solvers.iter().sorted(),
-                proc.0.solvers().iter().map(|x|&x.as_ref().file).sorted()
+                proc.0.solvers().iter().map(|s| {
+                    // let s: &<TestPostpro as Postprocessor>::Solver  = s.as_ref();
+                    let s: &<test::TestPostpro as interface::Postprocessor>::Solver = s.as_ref();
+                    s.id().as_ref()
+                }).sorted()
             );
 
         for (run, result) in proc.1.iter() {
@@ -149,7 +154,7 @@ fn test_all_ran() {
         for b in benchmarks.iter() {
             for s in solvers.iter() {
                 let filtered = proc.1.iter()
-                    .filter(|(run,_res)| &run.benchmark.file == b && &run.solver.file == s)
+                    .filter(|(run,_res)| &run.benchmark.file == b && run.solver.id().as_ref() == s)
                     .collect::<Vec<_>>();
                 if filtered.len() != 1 {
                     println!("benchmark: {}", b.display());

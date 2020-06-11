@@ -12,17 +12,17 @@ pub(crate) fn create(conf: ServiceConfig) -> anyhow::Result<impl Service> {
 }
 
 pub(crate) trait Service {
-    fn run<D, P>(&self, job: JobConfig<P::BAnnot>, dao: &D, post: &P) -> Result<P::Reduced, Error>
+    fn run<D, P>(&self, job: JobConfig<P>, dao: &D, post: &P) -> Result<P::Reduced, Error>
     where
-        D: Dao<P::BAnnot> + Sync,
+        D: Dao<P> + Sync,
         P: Postprocessor + Sync,
         <P as Postprocessor>::BAnnot: Clone;
 }
 
 impl Service for ServiceImpl {
-    fn run<D, P>(&self, job: JobConfig<P::BAnnot>, dao: &D, post: &P) -> Result<P::Reduced, Error>
+    fn run<D, P>(&self, job: JobConfig<P>, dao: &D, post: &P) -> Result<P::Reduced, Error>
     where
-        D: Dao<P::BAnnot> + Sync,
+        D: Dao<P> + Sync,
         P: Postprocessor + Sync,
         <P as Postprocessor>::BAnnot: Clone,
     {
@@ -69,7 +69,7 @@ impl Service for ServiceImpl {
         };
 
         let remove_files =
-            |ui: &Ui, conf: &BenchRunConf<P::BAnnot>, reason: FormatArgs| match dao
+            |ui: &Ui, conf: &BenchRunConf<P>, reason: FormatArgs| match dao
                 .remove_result(&conf, reason)
             {
                 Ok(()) => ui.println(format_args!("removed output files for {}", conf)),
@@ -153,14 +153,15 @@ impl Service for ServiceImpl {
     }
 }
 
-fn run_command<A>(run: &BenchRunConf<A>) -> Result<BenchRunResult<A>, Error> 
-where A: Clone
+fn run_command<P>(run: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error> 
+    where P: Postprocessor
 {
     use std::io::Read;
     use std::process::*;
 
-    let mut cmd = Command::new(run.command());
-    cmd.args(run.args());
+    // let mut cmd = Command::new(run.command());
+    // cmd.args(run.args());
+    let mut cmd = run.to_command();
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child =cmd.spawn().context("failed to launch child process")?;
@@ -179,7 +180,7 @@ where A: Clone
         let with_bench_status = |child: &mut Child,
                                  exit_status: Option<i32>,
                                  status: BenchmarkStatus|
-         -> Result<BenchRunResult<A>, Error> {
+         -> Result<BenchRunResult<P>, Error> {
             macro_rules! read_buf {
                 ($buf: ident) => {{
                     let mut $buf = vec![];
@@ -243,3 +244,20 @@ fn setup_ctrlc() {
         "failed to set up ctrl-c signal handling"
     );
 }
+
+fn set_thread_cnt(n: usize) -> anyhow::Result<()> {
+    let r = rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .build_global();
+
+    if cfg!(test) {
+        /* ignore error since tests are multithreaded */
+        let _ = r;
+    } else {
+        /* raise error in main method */
+        r?;
+    }
+    Ok(())
+}
+
+
