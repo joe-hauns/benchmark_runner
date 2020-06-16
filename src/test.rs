@@ -1,7 +1,6 @@
 use crate::*;
 use std::fs;
 use std::fs::*;
-use std::ffi::*;
 use std::os::unix::fs::PermissionsExt;
 use std::collections::*;
 use crate::interface::solvers::Script;
