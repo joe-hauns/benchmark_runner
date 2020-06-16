@@ -189,18 +189,18 @@ fn write_vec(path: &PathBuf, vec: &[u8]) -> Result<()> {
     fs::write(path, vec).with_context(|| format!("failed to write file: {}", path.display()))
 }
 
-fn write_json<A: Serialize>(path: PathBuf, value: &A) -> Result<()> {
+pub fn write_json<A: Serialize>(path: PathBuf, value: &A) -> Result<()> {
     let file =
         create_file(&path).with_context(|| format!("failed to create {}", path.display()))?;
     Ok(serde_json::to_writer_pretty(file, &value)
         .with_context(|| format!("failed to write json to {}", path.display()))?)
 }
 
-fn read_json<A: DeserializeOwned>(f: PathBuf) -> Result<A> {
+pub fn read_json<A: DeserializeOwned, P: AsRef<Path>>(f: P) -> Result<A> {
     Ok(serde_json::from_reader(
-        create_file(&f).with_context(|| format!("failed to open {}", f.display()))?,
+        create_file(&f).with_context(|| format!("failed to open {}", f.as_ref().display()))?,
     )
-    .with_context(|| format!("failed to read {}", f.display()))?)
+    .with_context(|| format!("failed to read {}", f.as_ref().display()))?)
 }
 
 fn create_file<P>(p: P) -> Result<fs::File> 

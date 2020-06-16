@@ -29,6 +29,7 @@ use clap::*;
 use thiserror::Error as ThisError;
 use wait_timeout::ChildExt;
 use std::convert::*;
+pub use dao::{read_json, write_json};
 
 #[macro_export]
 macro_rules! log_err {

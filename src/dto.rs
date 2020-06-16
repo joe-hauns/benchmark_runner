@@ -16,6 +16,9 @@ pub struct Benchmark {
 }
 
 impl Benchmark {
+    pub fn path<'a>(&'a self) -> impl AsRef<Path> + 'a {
+        &self.file
+    }
     pub fn reader(&self) -> Result<impl io::Read> {
         File::open(&self.file)
             .with_context(|| format!("failed to read benchmark {}", self.file.display()))
