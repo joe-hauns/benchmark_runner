@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::Result;
+use crate::interface::Ident;
 use std::fs;
 
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
@@ -8,7 +9,7 @@ pub struct DaoConfig {
 }
 
 pub(crate) fn create<P>(conf: DaoConfig) -> Result<impl Dao<P>>
-where P: Postprocessor,
+where P: Benchmarker,
 {
     //TODO get rid of this clone
     let outdir = conf.outdir;
@@ -17,7 +18,7 @@ where P: Postprocessor,
 }
 
 pub(crate) trait Dao<P> 
-where P: Postprocessor
+where P: Benchmarker
 {
     fn store_result(&self, run: &BenchRunResult<P>) -> Result<()>;
     fn read_result(&self, run: &BenchRunConf<P>) -> Result<Option<BenchRunResult<P>>>;
@@ -28,7 +29,7 @@ where P: Postprocessor
 #[derive(Serialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 // #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct BenchRunResultMeta<'a, P> 
-where P: Postprocessor,
+where P: Benchmarker,
 {
     #[serde(bound(serialize = "BenchRunConf<P>: Serialize"))]
     run: &'a BenchRunConf<P>,
@@ -38,7 +39,7 @@ where P: Postprocessor,
 }
 
 // impl<'a,P> serde::Serialize for BenchRunResultMeta<'a, P> 
-//     where P: Postprocessor,
+//     where P: Benchmarker,
 // {
 //     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
 //     where
@@ -56,7 +57,7 @@ where P: Postprocessor,
 
 #[derive(Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct BenchRunResultMetaOwned<P> 
-where P: Postprocessor,
+where P: Benchmarker,
 {
     #[serde(bound(deserialize = "BenchRunConf<P>: DeserializeOwned"))]
     run: BenchRunConf<P>,
@@ -72,31 +73,34 @@ pub struct DaoImpl {
 
 impl DaoImpl {
     fn outdir<P>(&self, run: &BenchRunConf<P>) -> PathBuf
-    where P: Postprocessor,
+    where P: Benchmarker,
+          // <P as Benchmarker>::Solver: Ident,
+          // <P as Benchmarker>::Benchmark: Ident,
     {
         let mut path = PathBuf::from(&self.outdir);
-        path.push(format!("{}", run.solver.id()));
+        path.push(format!("{}", Ident::id(run.solver.as_ref())));
         path.push(format!("{}", run.job.timeout.as_secs()));
-        path.push(run.benchmark.file.file_name().unwrap());
+        // path.push(run.benchmark.file.file_name().unwrap());
+        path.push(format!("{}", run.benchmark.id()));
         path
     }
     fn meta_json<P>(&self, run: &BenchRunConf<P>) -> PathBuf
     where
-        P: Postprocessor
+        P: Benchmarker
     {
         self.outdir(run).join("meta.json")
     }
 
     fn stdout_txt<P>(&self, run: &BenchRunConf<P>) -> PathBuf
     where
-        P: Postprocessor
+        P: Benchmarker
     {
         self.outdir(run).join("stdout.txt")
     }
 
     fn stderr_txt<P>(&self, run: &BenchRunConf<P>) -> PathBuf
     where
-        P: Postprocessor
+        P: Benchmarker
     {
         self.outdir(run).join("stderr.txt")
     }
@@ -104,7 +108,7 @@ impl DaoImpl {
 
 impl<P> Dao<P> for DaoImpl
 where
-    P: Postprocessor
+    P: Benchmarker
 {
     fn remove_result<R: std::fmt::Display>(&self, run: &BenchRunConf<P>, reason: R) -> Result<()> {
         let dir = self.outdir(run);

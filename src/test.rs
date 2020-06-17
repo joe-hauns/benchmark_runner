@@ -4,6 +4,7 @@ use std::fs::*;
 use std::os::unix::fs::PermissionsExt;
 use std::collections::*;
 use crate::interface::solvers::Script;
+use crate::interface::ids::PathId;
 
 struct TestPostpro;
 
@@ -14,27 +15,28 @@ impl TestPostpro {
 }
 
 impl<P> Summerizable for TestReduced<P> 
-    where P: Postprocessor
+    where P: Benchmarker
 {
     fn write_summary<W: io::Write>(&self, _: W) -> Result<()> {Ok(())}
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct TestReduced<P>(
-    #[serde(bound(serialize = "P: Postprocessor", deserialize = "P: Postprocessor"))]
+    #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
     JobConfig<P>, 
-    #[serde(bound(serialize = "P: Postprocessor", deserialize = "P: Postprocessor"))]
+    #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
     Vec<(BenchRunConf<P>, BenchRunResult<P>)>)
-    where P: Postprocessor
+    where P: Benchmarker
      ;
 
 
-impl Postprocessor for TestPostpro {
+impl Benchmarker for TestPostpro {
     type Solver = Script;
+    type Benchmark = PathId;
     type Mapped = BenchRunResult<Self>;
     type Reduced = TestReduced<Self>;
-    type BAnnot = ();
-    fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BAnnot> { Ok(()) }
+    // type BAnnot = ();
+    // fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BAnnot> { Ok(()) }
 
     fn map(&self, r: &BenchRunResult<Self>) -> Result<Self::Mapped> {
         Ok(r.clone())
@@ -133,13 +135,13 @@ fn test_all_ran() {
         assert_eq!(benchmarks.len() * solvers.len(), proc.1.len());
         itertools::assert_equal(
                 benchmarks.iter().sorted(),
-                proc.0.benchmarks().iter().map(|x|&x.as_ref().file).sorted()
+                proc.0.benchmarks().iter().map(|x|x.id().as_ref()).sorted()
             );
         itertools::assert_equal(
                 solvers.iter().sorted(),
                 proc.0.solvers().iter().map(|s| {
-                    // let s: &<TestPostpro as Postprocessor>::Solver  = s.as_ref();
-                    let s: &<test::TestPostpro as interface::Postprocessor>::Solver = s.as_ref();
+                    // let s: &<TestPostpro as Benchmarker>::Solver  = s.as_ref();
+                    let s: &<test::TestPostpro as interface::Benchmarker>::Solver = s.as_ref();
                     s.id().as_ref()
                 }).sorted()
             );
@@ -153,7 +155,7 @@ fn test_all_ran() {
         for b in benchmarks.iter() {
             for s in solvers.iter() {
                 let filtered = proc.1.iter()
-                    .filter(|(run,_res)| &run.benchmark.file == b && run.solver.id().as_ref() == s)
+                    .filter(|(run,_res)| run.benchmark.id().as_ref() == b && run.solver.id().as_ref() == s)
                     .collect::<Vec<_>>();
                 if filtered.len() != 1 {
                     println!("benchmark: {}", b.display());

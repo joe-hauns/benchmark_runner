@@ -15,16 +15,16 @@ pub(crate) trait Service {
     fn run<D, P>(&self, job: JobConfig<P>, dao: &D, post: &P) -> Result<P::Reduced, Error>
     where
         D: Dao<P> + Sync,
-        P: Postprocessor + Sync,
-        <P as Postprocessor>::BAnnot: Clone;
+        P: Benchmarker + Sync;
+        // <P as Benchmarker>::BAnnot: Clone;
 }
 
 impl Service for ServiceImpl {
     fn run<D, P>(&self, job: JobConfig<P>, dao: &D, post: &P) -> Result<P::Reduced, Error>
     where
         D: Dao<P> + Sync,
-        P: Postprocessor + Sync,
-        <P as Postprocessor>::BAnnot: Clone,
+        P: Benchmarker + Sync,
+        // <P as Benchmarker>::BAnnot: Clone,
     {
         let job = &Arc::new(job);
 
@@ -154,7 +154,7 @@ impl Service for ServiceImpl {
 }
 
 fn run_command<P>(run: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error> 
-    where P: Postprocessor
+    where P: Benchmarker
 {
     use std::io::Read;
     use std::process::*;

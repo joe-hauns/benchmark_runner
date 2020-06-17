@@ -5,19 +5,18 @@ use clap::*;
 use anyhow::Result;
 
 
-struct NopPostprocessor;
+struct NopBenchmarker;
 #[derive(Serialize,Deserialize)]
 struct Unit;
 impl Summerizable for Unit {
     fn write_summary<W: io::Write>(&self, _: W) -> Result<()> {Ok(())}
 }
 
-impl Postprocessor for NopPostprocessor {
+impl Benchmarker for NopBenchmarker {
     type Mapped = Unit;
     type Reduced = Unit;
     type Solver = benchmark_runner::solvers::Script;
-    type BAnnot = ();
-    fn annotate_benchark(&self, _: &Benchmark) -> Result<Self::BAnnot> { Ok(()) }
+    type Benchmark =  benchmark_runner::ids::PathId;
     fn map(&self, _: &BenchRunResult<Self>) -> Result<Self::Mapped> {
         Ok(Unit)
     }
@@ -27,5 +26,5 @@ impl Postprocessor for NopPostprocessor {
 }
 
 fn main() -> Result<()> {
-    benchmark_runner::main_with_opts(NopPostprocessor, Opts::parse())
+    benchmark_runner::main_with_opts(NopBenchmarker, Opts::parse())
 }

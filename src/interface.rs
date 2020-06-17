@@ -1,4 +1,5 @@
 pub mod solvers;
+pub mod ids;
 
 use super::*;
 use dto::*;
@@ -14,15 +15,14 @@ pub trait Summerizable {
         W: io::Write;
 }
 
-pub trait Postprocessor {
-    type Solver: Solver<Annotated<Benchmark, Self::BAnnot>>;
-    type Mapped: Send + Sync;
-    type Reduced: Serialize + DeserializeOwned + Summerizable + Sized;
-    /// Benchmark Annotation
-    type BAnnot: PartialOrd + PartialEq + Eq + Hash + Ord + Debug + Clone + Serialize + DeserializeOwned + Send + Sync + Sized;
+pub trait Benchmarker {
+    type Solver: Solver<Self>;
+    type Benchmark: Benchmark;
 
-    fn annotate_benchark(&self, b: &Benchmark) -> Result<Self::BAnnot>;
+    type Mapped: Send + Sync;
     fn map(&self, r: &BenchRunResult<Self>) -> Result<Self::Mapped>;
+
+    type Reduced: Serialize + DeserializeOwned + Summerizable + Sized;
     fn reduce(
         &self,
         job: &JobConfig<Self>,
@@ -31,9 +31,23 @@ pub trait Postprocessor {
 
 }
 
-pub trait Solver<B>:  Clone + Debug+ Hash+ Ord+ PartialOrd + Eq + PartialEq + Serialize + DeserializeOwned + Sized + Send + Sync {
+pub trait Ident {
     type Id: std::fmt::Display;
     fn id(&self) -> &Self::Id;
-    fn to_command(&self, benchmark: &B, timeout: &Duration) -> std::process::Command;
-    fn show_command(&self, benchmark: &B, timeout: &Duration) -> String;
+}
+
+pub trait Benchmark:  Ident + Clone + Debug+ Hash+ Ord+ PartialOrd + Eq + PartialEq + Serialize + DeserializeOwned + Sized + Send + Sync {
+    // type Id: std::fmt::Display;
+    // fn id(&self) -> &Self::Id;
+    // fn to_command(&self, benchmark: &B, timeout: &Duration) -> std::process::Command;
+    // fn show_command(&self, benchmark: &B, timeout: &Duration) -> String;
+}
+
+pub trait Solver<P>: Ident + Clone + Debug+ Hash+ Ord+ PartialOrd + Eq + PartialEq + Serialize + DeserializeOwned + Sized + Send + Sync 
+    where P: Benchmarker + ?Sized
+{
+    // type Id: std::fmt::Display;
+    // fn id(&self) -> &Self::Id;
+    fn to_command(&self, benchmark: &P::Benchmark, timeout: &Duration) -> std::process::Command;
+    fn show_command(&self, benchmark: &P::Benchmark, timeout: &Duration) -> String;
 }

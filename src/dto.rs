@@ -1,87 +1,79 @@
 use super::*;
 use anyhow::*;
-use std::convert::TryFrom;
 use std::fmt;
 use std::io;
 use std::process::*;
-use std::ops::Deref;
-use std::path::*;
 use std::sync::Arc;
-use std::fs::File;
 use derivative::*;
 
-#[derive(Serialize, Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Benchmark {
-    pub(crate) file: PathBuf,
-}
-
-impl Benchmark {
-    pub fn path<'a>(&'a self) -> impl AsRef<Path> + 'a {
-        &self.file
-    }
-    pub fn reader(&self) -> Result<impl io::Read> {
-        File::open(&self.file)
-            .with_context(|| format!("failed to read benchmark {}", self.file.display()))
-    }
-}
-
-impl fmt::Display for Benchmark {
-    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
-        self.file.display().fmt(w)
-    }
-}
-
+// #[derive(Serialize, Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+// pub struct Benchmark {
+//     pub(crate) file: PathBuf,
+// }
+//
 // impl Benchmark {
-//     pub fn file(&self) -> &OsStr {
-//         &self.file.file_name().unwrap()
+//     pub fn path<'a>(&'a self) -> impl AsRef<Path> + 'a {
+//         &self.file
+//     }
+//     pub fn reader(&self) -> Result<impl io::Read> {
+//         File::open(&self.file)
+//             .with_context(|| format!("failed to read benchmark {}", self.file.display()))
 //     }
 // }
-
-impl TryFrom<PathBuf> for Benchmark {
-    type Error = anyhow::Error;
-    fn try_from(file: PathBuf) -> Result<Self> {
-        Ok(Benchmark { file })
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Annotated<A, B>(pub(crate) A, pub(crate) B);
-
-impl<A, B> Deref for Annotated<A, B> {
-    type Target = A;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<A, B> Annotated<A, B> {
-    pub fn annotated(&self) -> &A {
-        &self.0
-    }
-    pub fn annotation(&self) -> &B {
-        &self.1
-    }
-}
+//
+// impl fmt::Display for Benchmark {
+//     fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
+//         self.file.display().fmt(w)
+//     }
+// }
+//
+// impl TryFrom<PathBuf> for Benchmark {
+//     type Error = anyhow::Error;
+//     fn try_from(file: PathBuf) -> Result<Self> {
+//         Ok(Benchmark { file })
+//     }
+// }
+//
+// #[derive(Serialize, Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
+// pub struct Annotated<A, B>(pub(crate) A, pub(crate) B);
+//
+// impl<A, B> Deref for Annotated<A, B> {
+//     type Target = A;
+//     fn deref(&self) -> &Self::Target {
+//         &self.0
+//     }
+// }
+//
+// impl<A, B> Annotated<A, B> {
+//     pub fn annotated(&self) -> &A {
+//         &self.0
+//     }
+//     pub fn annotation(&self) -> &B {
+//         &self.1
+//     }
+// }
 
 /// Represents a benchmark configuration that can be run. It contains a solver, a benchmark and some metadata.
 #[derive(Serialize, Deserialize, Derivative)]
 #[derivative( Clone(bound=""), Debug(bound=""), Hash(bound=""), Ord(bound=""), PartialOrd(bound=""), Eq(bound=""), PartialEq(bound="") )]
 pub struct BenchRunConf<P> 
-    where P: Postprocessor + ?Sized
+    where P: Benchmarker + ?Sized
 {
     // #[serde(bound(deserialize = "JobConfig<P>: DeserializeOwned", serialize = "JobConfig<P>: Serialize"))]
-    #[serde(bound(serialize = "P: Postprocessor", deserialize = "P: Postprocessor"))]
+    #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
     pub(crate) job: Arc<JobConfig<P>>,
-    pub(crate) benchmark: Arc<Annotated<Benchmark, P::BAnnot>>,
+    #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
+    pub(crate) benchmark: Arc<P::Benchmark>,
+    #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
     pub(crate) solver: Arc<P::Solver>,
 }
 impl<P> BenchRunConf<P>
-    where P: Postprocessor + ?Sized
+    where P: Benchmarker + ?Sized
 {
     pub fn job(&self) -> &JobConfig<P> {
         &self.job
     }
-    pub fn benchmark(&self) -> &Annotated<Benchmark, P::BAnnot> {
+    pub fn benchmark(&self) -> &P::Benchmark {
         self.benchmark.as_ref()
     }
     pub fn solver(&self) -> &P::Solver {
@@ -89,7 +81,7 @@ impl<P> BenchRunConf<P>
     }
 
     pub fn to_command<'a>(&self) -> Command {
-        self.solver().to_command(self.benchmark(), &self.job.timeout)
+        self.solver().to_command(&self.benchmark, &self.job.timeout)
     }
     //
     // pub fn args<'a>(&'a self) -> impl IntoIterator<Item = impl AsRef<OsStr> + fmt::Display + 'a> + 'a {
@@ -101,10 +93,10 @@ impl<P> BenchRunConf<P>
 }
 
 impl<P> fmt::Display for BenchRunConf<P> 
-    where P: Postprocessor
+    where P: Benchmarker
 {
     fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
-        self.solver().show_command(self.benchmark(), &self.job.timeout).fmt(w)
+        self.solver().show_command(&self.benchmark, &self.job.timeout).fmt(w)
         // write!(w, "{}", self.command().display())?;
         // for arg in self.args() {
         //     write!(w, " {}", arg)?;
@@ -116,24 +108,24 @@ impl<P> fmt::Display for BenchRunConf<P>
 #[derive(Serialize, Deserialize, Derivative)]
 #[derivative( Clone(bound=""), Debug(bound=""), Hash(bound=""), Ord(bound=""), PartialOrd(bound=""), Eq(bound=""), PartialEq(bound="") )]
 pub struct JobConfig<P> 
-    where P: Postprocessor  + ?Sized
+    where P: Benchmarker  + ?Sized
 
-    // where P: Postprocessor + Clone + std::fmt::Debug+ std::hash::Hash+ Ord+ PartialOrd + Eq + PartialEq + Serialize + DeserializeOwned+ ?Sized
+    // where P: Benchmarker + Clone + std::fmt::Debug+ std::hash::Hash+ Ord+ PartialOrd + Eq + PartialEq + Serialize + DeserializeOwned+ ?Sized
 {
     pub solvers: Vec<Arc<P::Solver>>,
-    pub benchmarks: Vec<Arc<Annotated<Benchmark, P::BAnnot>>>,
+    pub benchmarks: Vec<Arc<P::Benchmark>>,
     pub timeout: Duration,
 }
 
 
 impl<P> JobConfig<P> 
-    where P: Postprocessor + ?Sized
+    where P: Benchmarker + ?Sized
 {
     // pub fn solvers(&self) -> &[impl AsRef<P::Solver>] {
     pub fn solvers(&self) -> &[Arc<P::Solver>] {
         &self.solvers
     }
-    pub fn benchmarks(&self) -> &[Arc<Annotated<Benchmark, P::BAnnot>>] {
+    pub fn benchmarks(&self) -> &[Arc<P::Benchmark>] {
         &self.benchmarks
     }
     pub fn timeout(&self) -> Duration {
@@ -150,9 +142,9 @@ pub enum BenchmarkStatus {
 #[derive(Serialize, Deserialize, Derivative)]
 #[derivative( Clone(bound=""), Debug(bound=""), Hash(bound=""), Ord(bound=""), PartialOrd(bound=""), Eq(bound=""), PartialEq(bound="") )]
 pub struct BenchRunResult<P> 
-    where P: Postprocessor + ?Sized
+    where P: Benchmarker + ?Sized
 {
-    #[serde(bound(serialize = "P: Postprocessor", deserialize = "P: Postprocessor"))]
+    #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
     pub(crate) run: BenchRunConf<P>,
     pub(crate) status: BenchmarkStatus,
     pub(crate) time: Duration,
@@ -162,7 +154,7 @@ pub struct BenchRunResult<P>
 }
 
 impl<P> BenchRunResult<P> 
-    where P: Postprocessor + ?Sized
+    where P: Benchmarker + ?Sized
 {
     pub fn stdout<'a>(&'a self) -> Result<impl io::Read + 'a> {
         Ok(io::Cursor::new(&self.stdout))
