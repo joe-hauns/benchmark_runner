@@ -19,7 +19,6 @@ use rayon::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Arguments as FormatArgs;
-use std::fs;
 use std::fs::DirEntry;
 use std::io;
 use std::path::*;
@@ -29,7 +28,8 @@ use clap::*;
 use thiserror::Error as ThisError;
 use wait_timeout::ChildExt;
 use std::convert::*;
-pub use dao::{read_json, write_json};
+pub use dao::*;
+pub use dao::read_dir;
 
 #[macro_export]
 macro_rules! log_err {
@@ -172,19 +172,6 @@ impl<A> FromDir for Vec<A>
     }
 }
 
-fn read_dir<'a, P>(path: &'a P) -> Result<impl Iterator<Item = Result<DirEntry>> + 'a>
-where
-    P: AsRef<Path> + 'a,
-{
-    Ok(fs::read_dir(&path)
-        .with_context(|| format!("failed to read dir: {}", path.as_ref().display()))?
-        .map(move |x| {
-            x.with_context(move || {
-                format!("failed to read path entry: {}", path.as_ref().display())
-            })
-        }))
-}
-
 pub trait FromDir {
     fn from_dir<P>(dir: P) -> Result<Self>
     where
@@ -246,7 +233,7 @@ where
 pub fn get_result<P>(dao: DaoConfig, service: ServiceConfig, ident: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
 where
     P: Benchmarker + Sync,
-    P::Benchmark: FromDir,
+    // P::Benchmark: FromDir,
 {
 
     let dao = dao::create(dao)?;
@@ -263,7 +250,7 @@ where
 pub fn run_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> Result<P::Reduced, Error>
 where
     P: Benchmarker + Sync,
-    P::Benchmark: FromDir,
+    // P::Benchmark: FromDir,
 {
     let ApplicationConfig {
         job,
@@ -274,7 +261,6 @@ where
     let dao = dao::create(dao)?;
     let service = service::create(service)?;
     service.run(job, &dao, &post)
-
 }
 
 pub fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
@@ -294,7 +280,7 @@ where
 pub fn main_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> Result<()>
 where
     P: Benchmarker + Sync,
-    P::Benchmark: FromDir,
+    // P::Benchmark: FromDir,
 {
     match run_with_conf(post, conf) {
         Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),

@@ -173,14 +173,16 @@ where
     P: Benchmarker,
 {
     info!("running: {}", run.display_command());
-    use std::io::Read;
-    use std::process::*;
 
     // let mut cmd = Command::new(run.command());
     // cmd.args(run.args());
     let mut cmd = run.to_command();
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    let temp_dir = tempfile::tempdir().context("failed to create temp dir")?;
+    let temp_dir = temp_dir.path();
+    let stdout = temp_dir.join("stdout.txt");
+    let stderr = temp_dir.join("stderr.txt");
+    cmd.stdout(crate::dao::create_file(&stdout)?);
+    cmd.stderr(crate::dao::create_file(&stderr)?);
     let mut child =cmd.spawn().context("failed to launch child process")?;
 
 
@@ -194,24 +196,12 @@ where
             .wait_timeout(poll)
             .context("failed to wait for child process")?;
 
-        let with_bench_status = |child: &mut Child,
-                                 exit_status: Option<i32>,
+        let with_bench_status = | exit_status: Option<i32>,
                                  status: BenchmarkStatus|
          -> Result<BenchRunResult<P>, Error> {
-            macro_rules! read_buf {
-                ($buf: ident) => {{
-                    let mut $buf = vec![];
-                    if let Some(buf) = &mut child.$buf {
-                        buf.read_to_end(&mut $buf).with_context(|| {
-                            format!("failed to read {} of {}", stringify!($buf), run.display_command())
-                        })?;
-                    }
-                    $buf
-                }};
-            }
-
-            let stdout = read_buf!(stdout);
-            let stderr = read_buf!(stderr);
+            
+            let stdout = crate::dao::read_vec(&stdout)?;
+            let stderr = crate::dao::read_vec(&stderr)?;
 
             Ok(BenchRunResult {
                 run: run.clone(),
@@ -221,6 +211,7 @@ where
                 stderr,
                 exit_status,
             })
+
         };
 
         match status {
@@ -228,7 +219,7 @@ where
                 return if !status.success() && shall_terminate() {
                     Err(Error::TermSignal(TermSignal))
                 } else {
-                    with_bench_status(&mut child, status.code(), BenchmarkStatus::Success)
+                    with_bench_status(status.code(), BenchmarkStatus::Success)
                 }
             }
             None => {
@@ -238,7 +229,7 @@ where
                 }
                 if start.elapsed() > run.timeout.mul_f64(1.2) {
                     child.kill().context("failed to kill child process")?;
-                    return with_bench_status(&mut child, None, BenchmarkStatus::Timeout);
+                    return with_bench_status(None, BenchmarkStatus::Timeout);
                 }
             }
         }

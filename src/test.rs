@@ -157,7 +157,7 @@ fn test_all_ran() {
         }
 
 
-        for (b, bstr) in benchmarks.iter().zip(benchmark_strings) {
+        for (b, _bstr) in benchmarks.iter().zip(benchmark_strings) {
             for (s, sstr) in solvers.iter().zip(solver_strings.iter()) {
                 let filtered = proc.1.iter()
                     .filter(|(res,_mapped)| {
