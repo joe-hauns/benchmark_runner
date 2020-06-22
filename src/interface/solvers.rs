@@ -10,6 +10,7 @@ use crate::interface::ids::*;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Script {
+    pub(crate) id: String,
     pub(crate) file: PathId,
 }
 
@@ -39,15 +40,16 @@ impl TryFrom<PathBuf> for Script {
     type Error = anyhow::Error;
     fn try_from(file: PathBuf) -> Result<Self> {
         //TODO check if it's a file, and if it's executable
-        Ok(Script { file: FromDir::from_dir(file)? })
+        FromDir::from_dir(file)
+        // Ok(Script { file: FromDir::from_dir(file)? })
     }
 }
 
 
 impl Ident for Script {
-    type Id = PathId;
+    type Id = String;
     fn id(&self) -> &Self::Id {
-        &self.file
+        &self.id
     }
 }
 
@@ -90,6 +92,11 @@ impl FromDir for Script {
     fn from_dir<P>(file: P) -> Result<Self> 
         where P: AsRef<Path>,
     {
-        Ok(Script { file: FromDir::from_dir(file)? })
+        let file = file.as_ref();
+        match file.file_name().and_then(|x|x.to_str()) {
+            Some(id) => Ok(Script { id: id.to_owned(),  file: FromDir::from_dir(file)? }),
+            None => bail!("script has no file name, or conains invalid characters")
+        }
+
     }
 }

@@ -25,7 +25,7 @@ struct TestReduced<P>(
     #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
     JobConfig<P>, 
     #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
-    Vec<(BenchRunConf<P>, BenchRunResult<P>)>)
+    Vec<(BenchRunResult<P>, BenchRunResult<P>)>)
     where P: Benchmarker
      ;
 
@@ -42,7 +42,7 @@ impl Benchmarker for TestPostpro {
         Ok(r.clone())
     }
 
-    fn reduce(&self, conf: &JobConfig<Self>, iter: impl IntoIterator<Item=(BenchRunConf<Self>, Self::Mapped)>) -> Result<Self::Reduced> {
+    fn reduce(&self, conf: &JobConfig<Self>, iter: impl IntoIterator<Item=(BenchRunResult<Self>, Self::Mapped)>) -> Result<Self::Reduced> {
         Ok(TestReduced(conf.clone(), iter.into_iter().collect()))
     }
 
@@ -72,12 +72,14 @@ fn test_all_ran() {
 // quickcheck! {
     fn prop(benchmarks: BTreeSet<usize>, solvers: BTreeSet<usize>) -> bool {
 
-        let benchmarks = benchmarks.into_iter()
+        let benchmark_strings = benchmarks.into_iter()
             .map(|x| format!("benchmark{}", x))
+            .sorted()
             .collect::<Vec<_>>();
 
-        let solvers = solvers.into_iter()
+        let solver_strings = solvers.into_iter()
             .map(|x| format!("solver{}", x))
+            .sorted()
             .collect::<Vec<_>>();
 
         let bench_dir = tempfile::tempdir().unwrap();
@@ -94,12 +96,14 @@ fn test_all_ran() {
             num_threads: None,
         };
 
-        let benchmarks: Vec<_> = benchmarks.into_iter()
-            .map(|b|bench_dir.path().join(b))
+        let benchmarks: Vec<PathBuf> = benchmark_strings.iter()
+            .map(PathBuf::from)
+            .map(|b| bench_dir.path().join(b))
             .collect();
 
-        let solvers: Vec<_> = solvers.into_iter()
-            .map(|s|solver_dir.path().join(s))
+        let solvers: Vec<_> = solver_strings.iter()
+            .map(PathBuf::from)
+            .map(|s|solver_dir.path().join(&s))
             .collect();
 
         for b in benchmarks.iter() {
@@ -130,7 +134,7 @@ fn test_all_ran() {
         let benchmarks: Vec<_> = benchmarks.into_iter().map(|p|p.canonicalize().unwrap()).collect();
         let solvers: Vec<_>  = solvers.into_iter().map(|p|p.canonicalize().unwrap()).collect();
 
-        let proc = run_with_opts(TestPostpro ::new(), opts).unwrap();
+        let proc = run_with_opts(TestPostpro::new(), opts).unwrap();
 
         assert_eq!(benchmarks.len() * solvers.len(), proc.1.len());
         itertools::assert_equal(
@@ -138,24 +142,28 @@ fn test_all_ran() {
                 proc.0.benchmarks().iter().map(|x|x.id().as_ref()).sorted()
             );
         itertools::assert_equal(
-                solvers.iter().sorted(),
+                solver_strings.iter(),
                 proc.0.solvers().iter().map(|s| {
                     // let s: &<TestPostpro as Benchmarker>::Solver  = s.as_ref();
                     let s: &<test::TestPostpro as interface::Benchmarker>::Solver = s.as_ref();
-                    s.id().as_ref()
+                    s.id()
                 }).sorted()
             );
 
-        for (run, result) in proc.1.iter() {
-            assert_eq!(&proc.0, run.job.as_ref());
-            assert_eq!(run, &result.run);
+        for (result, mapped) in proc.1.iter() {
+            let run = &result.run;
+            // assert_eq!(&proc.0, run.job.as_ref());
+            assert_eq!(run, &mapped.run);
         }
 
 
-        for b in benchmarks.iter() {
-            for s in solvers.iter() {
+        for (b, bstr) in benchmarks.iter().zip(benchmark_strings) {
+            for (s, sstr) in solvers.iter().zip(solver_strings.iter()) {
                 let filtered = proc.1.iter()
-                    .filter(|(run,_res)| run.benchmark.id().as_ref() == b && run.solver.id().as_ref() == s)
+                    .filter(|(res,_mapped)| {
+                        let run = &res.run;
+                        run.benchmark.id().as_ref() == b && run.solver.id() == sstr
+                    })
                     .collect::<Vec<_>>();
                 if filtered.len() != 1 {
                     println!("benchmark: {}", b.display());

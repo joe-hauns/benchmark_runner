@@ -2,6 +2,7 @@ use super::*;
 use anyhow::Result;
 use crate::interface::Ident;
 use std::fs;
+use log::*;
 
 #[derive(Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct DaoConfig {
@@ -77,13 +78,19 @@ impl DaoImpl {
           // <P as Benchmarker>::Solver: Ident,
           // <P as Benchmarker>::Benchmark: Ident,
     {
-        let mut path = PathBuf::from(&self.outdir);
-        path.push(format!("{}", Ident::id(run.solver.as_ref())));
-        path.push(format!("{}", run.job.timeout.as_secs()));
-        // path.push(run.benchmark.file.file_name().unwrap());
-        path.push(format!("{}", run.benchmark.id()));
-        path
+        //TODO make this clean
+        macro_rules! id_to_path {
+            ($x: expr) =>  { {
+                let id = PathBuf::from(format!("{}", $x));
+                id.file_name().unwrap().to_owned()
+            }}
+        }
+        PathBuf::from(&self.outdir)
+            .join(id_to_path!(Ident::id(run.solver.as_ref())))
+            .join(format!("{}", run.timeout.as_secs()))
+            .join(id_to_path!(run.benchmark.id()))
     }
+
     fn meta_json<P>(&self, run: &BenchRunConf<P>) -> PathBuf
     where
         P: Benchmarker
@@ -111,6 +118,7 @@ where
     P: Benchmarker
 {
     fn remove_result<R: std::fmt::Display>(&self, run: &BenchRunConf<P>, reason: R) -> Result<()> {
+        info!("removing result {:?} (reason: {})", run, reason);
         let dir = self.outdir(run);
         let err_dir = dir.with_extension("err");
         if err_dir.exists() {
@@ -124,7 +132,7 @@ where
         // ));
         let reason_file = err_dir.join("error_reason.txt");
         if let Err(e) =
-            write_vec(&reason_file, format!("{}", reason).as_ref())
+            write_vec(create_file(&reason_file)?, format!("{}", reason).as_ref())
             // create_file(reason_file).and_then(|mut reason_file| write!(reason_file, "{}", reason).co?)
         {
             eprintln!("failed to write reason for file removal: {}", e);
@@ -132,7 +140,9 @@ where
         }
         Ok(())
     }
+
     fn store_result(&self, run: &BenchRunResult<P>) -> Result<()> {
+        info!("storing result {:?}", run);
         let BenchRunResult {
             run,
             status,
@@ -146,7 +156,7 @@ where
         create_dir_all(&outdir)?;
 
         write_json(
-            self.meta_json(run),
+            create_file(self.meta_json(run))?,
             &BenchRunResultMeta {
                 run,
                 status,
@@ -154,12 +164,13 @@ where
                 exit_status,
             },
         )?;
-        write_vec(&self.stdout_txt(run), stdout)?;
-        write_vec(&self.stderr_txt(run), stderr)?;
+        write_vec(create_file(&self.stdout_txt(run))?, stdout)?;
+        write_vec(create_file(&self.stderr_txt(run))?, stderr)?;
         Ok(())
     }
 
     fn read_result(&self, run: &BenchRunConf<P>) -> Result<Option<BenchRunResult<P>>> {
+        info!("reading result {:?}", run);
         let outdir = self.outdir(run);
         if !outdir.exists() {
             return Ok(None);
@@ -189,22 +200,32 @@ fn read_vec(path: &PathBuf) -> Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("failed to read file: {}", path.display()))
 }
 
-fn write_vec(path: &PathBuf, vec: &[u8]) -> Result<()> {
-    fs::write(path, vec).with_context(|| format!("failed to write file: {}", path.display()))
+fn write_vec(mut file: fs::File, vec: &[u8]) -> Result<()> {
+    use std::io::Write;
+    // fs::write(path, vec).with_context(|| format!("failed to write file: {}", path.display()))
+    file.write_all(vec).context("failed to write file")
 }
 
-pub fn write_json<A: Serialize>(path: PathBuf, value: &A) -> Result<()> {
-    let file =
-        create_file(&path).with_context(|| format!("failed to create {}", path.display()))?;
+pub fn write_json<A: Serialize>(file: fs::File, value: &A) -> Result<()> {
+    // let file =
+    //     create_file(&path).with_context(|| format!("failed to create {}", path.display()))?;
     Ok(serde_json::to_writer_pretty(file, &value)
-        .with_context(|| format!("failed to write json to {}", path.display()))?)
+        .context("failed to write json")?)
 }
+
+// pub fn write_json<A: Serialize>(path: PathBuf, value: &A) -> Result<()> {
+//     let file =
+//         create_file(&path).with_context(|| format!("failed to create {}", path.display()))?;
+//     Ok(serde_json::to_writer_pretty(file, &value)
+//         .with_context(|| format!("failed to write json to {}", path.display()))?)
+// }
 
 pub fn read_json<A: DeserializeOwned, P: AsRef<Path>>(f: P) -> Result<A> {
+    let f = f.as_ref();
     Ok(serde_json::from_reader(
-        create_file(&f).with_context(|| format!("failed to open {}", f.as_ref().display()))?,
+        open_file(&f).with_context(|| format!("failed to open json '{}'", f.display()))?,
     )
-    .with_context(|| format!("failed to read {}", f.as_ref().display()))?)
+    .with_context(|| format!("failed to read json '{}'", f.display()))?)
 }
 
 fn create_file<P>(p: P) -> Result<fs::File> 
@@ -212,7 +233,15 @@ fn create_file<P>(p: P) -> Result<fs::File>
 {
     let p = p.as_ref();
     fs::File::create(p)
-        .with_context(||format!("failed to create file {}", p.display()))
+        .with_context(||format!("failed to create file '{}'", p.display()))
+}
+
+fn open_file<P>(p: P) -> Result<fs::File> 
+    where P: AsRef<Path>
+{
+    let p = p.as_ref();
+    fs::File::open(p)
+        .with_context(||format!("failed to open file '{}'", p.display()))
 }
 
 
@@ -221,7 +250,7 @@ fn remove_dir_all<P>(p: P) -> Result<()>
 {
     let p = p.as_ref();
     fs::remove_dir_all(p)
-        .with_context(||format!("failed to remove dir {}", p.display()))
+        .with_context(||format!("failed to remove dir '{}'", p.display()))
 }
 
 fn create_dir_all<P>(p: P) -> Result<()> 
@@ -229,7 +258,7 @@ fn create_dir_all<P>(p: P) -> Result<()>
 {
     let p = p.as_ref();
     fs::create_dir_all(p)
-        .with_context(||format!("failed to create dirs {}", p.display()))
+        .with_context(||format!("failed to create dirs '{}'", p.display()))
 }
 
 fn rename<P, Q>(p: P, q: Q) -> Result<()> 
@@ -239,6 +268,6 @@ fn rename<P, Q>(p: P, q: Q) -> Result<()>
     let p = p.as_ref();
     let q = q.as_ref();
     fs::rename(p, q)
-        .with_context(||format!("failed to rename {} to {}", p.display(), q.display()))
+        .with_context(||format!("failed to rename '{}' to '{}'", p.display(), q.display()))
 }
 

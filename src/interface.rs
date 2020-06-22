@@ -26,7 +26,7 @@ pub trait Benchmarker {
     fn reduce(
         &self,
         job: &JobConfig<Self>,
-        iter: impl IntoIterator<Item = (BenchRunConf<Self>, Self::Mapped)>,
+        iter: impl IntoIterator<Item = (BenchRunResult<Self>, Self::Mapped)>,
     ) -> Result<Self::Reduced>;
 
 }

@@ -233,7 +233,7 @@ pub enum Error {
     TermSignal(#[from] TermSignal),
 }
 
-fn run_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
+pub fn run_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
 where
     P: Benchmarker + Sync,
     P::Solver: FromDir,
@@ -243,7 +243,24 @@ where
     run_with_conf(post, conf)
 }
 
-fn run_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> Result<P::Reduced, Error>
+pub fn get_result<P>(dao: DaoConfig, service: ServiceConfig, ident: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
+where
+    P: Benchmarker + Sync,
+    P::Benchmark: FromDir,
+{
+
+    let dao = dao::create(dao)?;
+    let service = service::create(service)?;
+    dao.read_result(&ident)?
+        .map(Ok)
+        .unwrap_or_else(|| {
+            service.run_single(ident)
+        })
+    // service.run(job, &dao, &post)
+}
+
+
+pub fn run_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> Result<P::Reduced, Error>
 where
     P: Benchmarker + Sync,
     P::Benchmark: FromDir,

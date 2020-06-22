@@ -1,6 +1,7 @@
 use super::*;
 use std::result::Result;
 use super::Error;
+use log::*;
 
 struct ServiceImpl {
     conf: ServiceConfig,
@@ -17,9 +18,23 @@ pub(crate) trait Service {
         D: Dao<P> + Sync,
         P: Benchmarker + Sync;
         // <P as Benchmarker>::BAnnot: Clone;
+    fn run_single<P>(&self, ident: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
+    where
+        P: Benchmarker + Sync;
 }
 
 impl Service for ServiceImpl {
+    fn run_single<P>(&self, conf: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
+    where
+        P: Benchmarker + Sync,
+        // <P as Benchmarker>::BAnnot: Clone,
+    {
+        println!("Running: {}...", conf.display_command());
+        let out = run_command(&conf);
+        println!("Finished.");
+        out
+    }
+
     fn run<D, P>(&self, job: JobConfig<P>, dao: &D, post: &P) -> Result<P::Reduced, Error>
     where
         D: Dao<P> + Sync,
@@ -29,7 +44,6 @@ impl Service for ServiceImpl {
         let job = &Arc::new(job);
 
         // println!("output dir: {}", config.dao.outdir.display());
-        println!("cpus: {}", num_cpus::get_physical());
 
         setup_ctrlc();
         log_err_!(
@@ -49,7 +63,7 @@ impl Service for ServiceImpl {
             bs.par_iter()
                 .flat_map(move |benchmark| {
                     cs.par_iter().map(move |solver| BenchRunConf {
-                        job: job.clone(),
+                        timeout: job.timeout,
                         benchmark: benchmark.clone(),
                         solver: solver.clone(),
                     })
@@ -68,13 +82,14 @@ impl Service for ServiceImpl {
                 })
         };
 
-        let remove_files =
-            |ui: &Ui, conf: &BenchRunConf<P>, reason: FormatArgs| match dao
-                .remove_result(&conf, reason)
+        let remove_files = |ui: &Ui, conf: &BenchRunConf<P>, reason: FormatArgs| {
+            eprintln!("error: {}", reason);
+            match dao.remove_result(&conf, reason)
             {
-                Ok(()) => ui.println(format_args!("removed output files for {}", conf)),
+                Ok(()) => ui.println(format_args!("removed output files for {} {}", conf.solver().id(), conf.benchmark().id())),
                 Err(e) => ui.println(format_args!("failed to remove output files: {:#}", e)),
-            };
+            }
+        };
 
         {
             let ui = Ui::new("Benchmarking", todo.len());
@@ -91,7 +106,7 @@ impl Service for ServiceImpl {
                         }
                         Err(Error::TermSignal(TermSignal)) => None,
                         Err(e) => {
-                            remove_files(&ui, &conf, format_args!("failed to run {}: {:#}", conf, e));
+                            remove_files(&ui, &conf, format_args!("failed to run {}: {:#}", conf.display_command(), e));
                             None
                         }
                     };
@@ -113,7 +128,7 @@ impl Service for ServiceImpl {
                 .filter_map(|x| {
                     Some({
                         let res = match post.map(&x) {
-                            Ok(mapped) => (x.run.clone(), mapped),
+                            Ok(mapped) => (x.clone(), mapped),
                             Err(e) => {
                                 remove_files(
                                     &ui,
@@ -153,9 +168,11 @@ impl Service for ServiceImpl {
     }
 }
 
-fn run_command<P>(run: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error> 
-    where P: Benchmarker
+fn run_command<P>(run: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
+where
+    P: Benchmarker,
 {
+    info!("running: {}", run.display_command());
     use std::io::Read;
     use std::process::*;
 
@@ -186,7 +203,7 @@ fn run_command<P>(run: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
                     let mut $buf = vec![];
                     if let Some(buf) = &mut child.$buf {
                         buf.read_to_end(&mut $buf).with_context(|| {
-                            format!("failed to read {} of {}", stringify!($buf), run)
+                            format!("failed to read {} of {}", stringify!($buf), run.display_command())
                         })?;
                     }
                     $buf
@@ -219,7 +236,7 @@ fn run_command<P>(run: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
                     child.kill().context("failed to kill child process")?;
                     return Err(TermSignal)?;
                 }
-                if start.elapsed() > run.job.timeout.mul_f64(1.2) {
+                if start.elapsed() > run.timeout.mul_f64(1.2) {
                     child.kill().context("failed to kill child process")?;
                     return with_bench_status(&mut child, None, BenchmarkStatus::Timeout);
                 }
@@ -246,6 +263,7 @@ fn setup_ctrlc() {
 }
 
 fn set_thread_cnt(n: usize) -> anyhow::Result<()> {
+    println!("using {} threads", num_cpus::get_physical());
     let r = rayon::ThreadPoolBuilder::new()
         .num_threads(n)
         .build_global();
@@ -259,5 +277,3 @@ fn set_thread_cnt(n: usize) -> anyhow::Result<()> {
     }
     Ok(())
 }
-
-

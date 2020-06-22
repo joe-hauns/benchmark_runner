@@ -20,7 +20,7 @@ impl Benchmarker for NopBenchmarker {
     fn map(&self, _: &BenchRunResult<Self>) -> Result<Self::Mapped> {
         Ok(Unit)
     }
-    fn reduce(&self, _: &JobConfig<Self>,_: impl IntoIterator<Item=(BenchRunConf<Self>, Self::Mapped)>) -> Result<Self::Reduced> {
+    fn reduce(&self, _: &JobConfig<Self>,_: impl IntoIterator<Item=(BenchRunResult<Self>, Self::Mapped)>) -> Result<Self::Reduced> {
         Ok(Unit)
     }
 }

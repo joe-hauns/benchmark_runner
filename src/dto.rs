@@ -60,19 +60,40 @@ pub struct BenchRunConf<P>
     where P: Benchmarker + ?Sized
 {
     // #[serde(bound(deserialize = "JobConfig<P>: DeserializeOwned", serialize = "JobConfig<P>: Serialize"))]
+    // #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
+    // pub(crate) job: Arc<JobConfig<P>>,
+    pub timeout: Duration,
     #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
-    pub(crate) job: Arc<JobConfig<P>>,
+    pub benchmark: Arc<P::Benchmark>,
     #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
-    pub(crate) benchmark: Arc<P::Benchmark>,
-    #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
-    pub(crate) solver: Arc<P::Solver>,
+    pub solver: Arc<P::Solver>,
 }
+
+
+// struct PairId<A,B>(A,B);
+//
+// impl<P> Ident for BenchRunConf<P> 
+//     where P: Benchmarker + ?Sized
+// {
+//     type Id = PairId(
+//         <P::Solver    as Ident>::Id, 
+//         <P::Benchmark as Ident>::Id, 
+//         );
+//     fn id(&self) -> &Self::Id { 
+//         PairId(
+//             self.solver.id(),
+//             self.benchmark.id(),
+//         ) 
+//     }
+// }
+
+
 impl<P> BenchRunConf<P>
     where P: Benchmarker + ?Sized
 {
-    pub fn job(&self) -> &JobConfig<P> {
-        &self.job
-    }
+    // pub fn job(&self) -> &JobConfig<P> {
+    //     &self.job
+    // }
     pub fn benchmark(&self) -> &P::Benchmark {
         self.benchmark.as_ref()
     }
@@ -81,27 +102,17 @@ impl<P> BenchRunConf<P>
     }
 
     pub fn to_command<'a>(&self) -> Command {
-        self.solver().to_command(&self.benchmark, &self.job.timeout)
+        self.solver().to_command(&self.benchmark, &self.timeout)
     }
-    //
+
     // pub fn args<'a>(&'a self) -> impl IntoIterator<Item = impl AsRef<OsStr> + fmt::Display + 'a> + 'a {
     //     use std::iter::once;
     //     once(Args::PathBuf(&self.benchmark().file))
-    //         .chain(once(Args::TimeOut(format!("{}", self.job.timeout.as_secs()))))
+    //         .chain(once(Args::TimeOut(format!("{}", self.timeout.as_secs()))))
     // }
 
-}
-
-impl<P> fmt::Display for BenchRunConf<P> 
-    where P: Benchmarker
-{
-    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
-        self.solver().show_command(&self.benchmark, &self.job.timeout).fmt(w)
-        // write!(w, "{}", self.command().display())?;
-        // for arg in self.args() {
-        //     write!(w, " {}", arg)?;
-        // }
-        // Ok(())
+    pub fn display_command(&self) -> impl fmt::Display {
+        self.solver().show_command(&self.benchmark, &self.timeout)
     }
 }
 
@@ -149,17 +160,47 @@ pub struct BenchRunResult<P>
     pub(crate) status: BenchmarkStatus,
     pub(crate) time: Duration,
     pub(crate) exit_status: Option<i32>,
+    #[derivative(Debug="ignore")]
     pub(crate) stdout: Vec<u8>,
+    #[derivative(Debug="ignore")]
     pub(crate) stderr: Vec<u8>,
 }
+
+use std::fmt::Debug;
+
+// #[derive(Serialize, Deserialize, Derivative)]
+// #[derivative( Clone(bound="P: Benchmarker"), Debug(bound="P: Benchmarker"), Hash(bound="P: Benchmarker"), Ord(bound="P: Benchmarker"), PartialOrd(bound="P: Benchmarker"), Eq(bound="P: Benchmarker"), PartialEq(bound="P: Benchmarker") )]
+pub struct MappedBenchRunResult<P> 
+    where P: Benchmarker + ?Sized
+{
+    // #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
+    pub(crate) raw: BenchRunResult<P>,
+    // #[serde(bound(serialize = "P: Benchmarker", deserialize = "P: Benchmarker"))]
+    pub(crate) mapped: P::Mapped,
+}
+
+
+
+// impl<P> Ident for BenchRunResult<P> 
+//     where P: Benchmarker + ?Sized
+// {
+//     type Id = <BenchRunConf<P> as Ident>::Id;
+//     fn id(&self) -> &Self::Id { self.run.id() }
+// }
 
 impl<P> BenchRunResult<P> 
     where P: Benchmarker + ?Sized
 {
+    pub fn run(&self) -> &BenchRunConf<P> { &self.run }
+    pub fn solver(&self) -> &P::Solver { &self.run().solver() }
+    pub fn benchmark(&self) -> &P::Benchmark { &self.run().benchmark() }
     pub fn stdout<'a>(&'a self) -> Result<impl io::Read + 'a> {
         Ok(io::Cursor::new(&self.stdout))
     }
     pub fn stderr<'a>(&'a self) -> Result<impl io::Read + 'a> {
         Ok(io::Cursor::new(&self.stderr))
     }
+    pub fn status(&self) -> Option<i32> {self.exit_status}
+    pub fn time(&self) -> Duration {self.time}
+    pub fn display_command(&self) -> impl fmt::Display { self.run.display_command() }
 }
