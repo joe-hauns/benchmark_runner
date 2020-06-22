@@ -39,23 +39,6 @@ where P: Benchmarker,
     exit_status: &'a Option<i32>,
 }
 
-// impl<'a,P> serde::Serialize for BenchRunResultMeta<'a, P> 
-//     where P: Benchmarker,
-// {
-//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-//     where
-//         S: serde::Serializer,
-//     {
-//         use serde::ser::*;
-//         let mut map = serializer.serialize_map(Some(4))?;
-//         map.serialize_entry("run", self.run)?;
-//         map.serialize_entry("status", self.status)?;
-//         map.serialize_entry("time", self.time)?;
-//         map.serialize_entry("exit_status", self.exit_status)?;
-//         map.end()
-//     }
-// }
-
 #[derive(Deserialize, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct BenchRunResultMetaOwned<P> 
 where P: Benchmarker,
@@ -118,7 +101,7 @@ where
     P: Benchmarker
 {
     fn remove_result<R: std::fmt::Display>(&self, run: &BenchRunConf<P>, reason: R) -> Result<()> {
-        info!("removing result {:?} (reason: {})", run, reason);
+        info!("removing result {} (reason: {})", run, reason);
         let dir = self.outdir(run);
         let err_dir = dir.with_extension("err");
         if err_dir.exists() {
@@ -170,7 +153,7 @@ where
     }
 
     fn read_result(&self, run: &BenchRunConf<P>) -> Result<Option<BenchRunResult<P>>> {
-        info!("reading result {:?}", run);
+        info!("reading result {}", run);
         let outdir = self.outdir(run);
         if !outdir.exists() {
             return Ok(None);
@@ -196,7 +179,8 @@ where
     }
 }
 
-fn read_vec(path: &PathBuf) -> Result<Vec<u8>> {
+// TODO move all these function to own module `fs`
+pub fn read_vec(path: &PathBuf) -> Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("failed to read file: {}", path.display()))
 }
 
@@ -228,7 +212,7 @@ pub fn read_json<A: DeserializeOwned, P: AsRef<Path>>(f: P) -> Result<A> {
     .with_context(|| format!("failed to read json '{}'", f.display()))?)
 }
 
-fn create_file<P>(p: P) -> Result<fs::File> 
+pub fn create_file<P>(p: P) -> Result<fs::File> 
     where P: AsRef<Path>
 {
     let p = p.as_ref();
