@@ -70,7 +70,7 @@ pub struct Opts {
     /// the solver as first argument.
     #[clap(
         parse(from_os_str),
-        short = "b",
+        short = 'b',
         long = "benchmarks",
         default_value = "benchmarks"
     )]
@@ -79,7 +79,7 @@ pub struct Opts {
     /// Directory containing solvers.
     #[clap(
         parse(from_os_str),
-        short = "s",
+        short = 's',
         long = "solvers",
         default_value = "solvers"
     )]
@@ -91,18 +91,18 @@ pub struct Opts {
     /// directory to which the outputs written
     #[clap(
         parse(from_os_str),
-        short = "o",
+        short = 'o',
         long = "outdir",
         default_value = "benchmark_results"
     )]
     pub outdir: PathBuf,
 
     // /// only run post processor, not benchmarks
-    // #[clap(short = "p", long = "post")]
+    // #[clap(short = 'p', long = "post")]
     // pub only_post_process: bool,
 
     /// How many threads shall be ran in parallel? [default: number of physical cpus]
-    #[clap(short = "t", long = "threads")]
+    #[clap(short = 't', long = "threads")]
     pub num_threads: Option<usize>,
 }
 
