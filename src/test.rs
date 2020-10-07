@@ -50,21 +50,21 @@ impl Benchmarker for TestPostpro {
 
 #[test]
 fn test_all_ran() {
-    println!("one");
+    tprintln!("one");
     assert!(prop(
             vec![0,1,2].into_iter().collect(), 
             vec![].into_iter().collect()));
 
-    println!("two");
+    tprintln!("two");
     assert!(prop(
             vec![].into_iter().collect(), 
             vec![173, 73, 73].into_iter().collect()));
 
-    println!("three");
+    tprintln!("three");
     assert!(prop(
             vec![0,1,2].into_iter().collect(), 
             vec![173, 73, 73].into_iter().collect()));
-    println!("end");
+    tprintln!("end");
 
 }
 
@@ -166,9 +166,9 @@ fn test_all_ran() {
                     })
                     .collect::<Vec<_>>();
                 if filtered.len() != 1 {
-                    println!("benchmark: {}", b.display());
-                    println!("solver:    {}", s.display());
-                    println!("found:     {:#?}", filtered);
+                    tprintln!("benchmark: {}", b.display());
+                    tprintln!("solver:    {}", s.display());
+                    tprintln!("found:     {:#?}", filtered);
                     panic!();
                 }
                 let (_, res) = filtered[0].clone();

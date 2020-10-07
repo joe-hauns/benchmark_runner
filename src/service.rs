@@ -2,6 +2,7 @@ use super::*;
 use std::result::Result;
 use super::Error;
 use log::*;
+use atty::Stream;
 
 struct ServiceImpl {
     conf: ServiceConfig,
@@ -29,9 +30,9 @@ impl Service for ServiceImpl {
         P: Benchmarker + Sync,
         // <P as Benchmarker>::BAnnot: Clone,
     {
-        println!("Running: {}...", conf.display_command());
+        tprintln!("Running: {}...", conf.display_command());
         let out = run_command(&conf);
-        println!("Finished.");
+        tprintln!("Finished.");
         out
     }
 
@@ -42,8 +43,6 @@ impl Service for ServiceImpl {
         // <P as Benchmarker>::BAnnot: Clone,
     {
         let job = &Arc::new(job);
-
-        // println!("output dir: {}", config.dao.outdir.display());
 
         setup_ctrlc();
         log_err_!(
@@ -68,6 +67,7 @@ impl Service for ServiceImpl {
                         solver: solver.clone(),
                     })
                 })
+                .filter(|_| !shall_terminate())
                 .partition_map(|c| {
                     let result = match dao.read_result(&c) {
                         Ok(Some(res)) => Either::Left(res),
@@ -254,7 +254,9 @@ fn setup_ctrlc() {
 }
 
 fn set_thread_cnt(n: usize) -> anyhow::Result<()> {
-    println!("using {} threads", num_cpus::get_physical());
+    if atty::is(Stream::Stdout) {
+        println!("using {} threads", num_cpus::get_physical());
+    }
     let r = rayon::ThreadPoolBuilder::new()
         .num_threads(n)
         .build_global();

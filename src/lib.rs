@@ -1,3 +1,13 @@
+
+#[macro_export]
+macro_rules! tprintln {
+    ($e:expr $(, $fmt:expr)*) => {
+        if atty::is(atty::Stream::Stdout) {
+            println!($e $(, $fmt)*);
+        }
+    }
+}
+
 mod dao;
 mod interface;
 mod dto;
