@@ -10,7 +10,7 @@ impl<P> fmt::Display for BenchRunConf<P>
     where P: Benchmarker + ?Sized
 {
     fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
-        write!(w, "{} {} {:?}", self.solver.id(), self.benchmark.id(), self.timeout)
+        write!(w, "{} {}", self.solver.id(), self.benchmark.id())
     }
 }
 
