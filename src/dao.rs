@@ -179,7 +179,13 @@ where
 
         let stdout = read_vec(&self.stdout_txt(&run))?;
         let stderr = read_vec(&self.stderr_txt(&run))?;
-        let files  = read_file_conts(self.pwd_dir(&run))?;
+        let pwd = self.pwd_dir(&run);
+        let files = 
+            if pwd.exists() {
+                read_file_conts(&pwd)?
+            } else {
+                vec![] // for backwards compability
+            };
 
         Ok(Some(BenchRunResult {
             run,
