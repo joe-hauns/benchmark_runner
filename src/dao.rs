@@ -159,7 +159,9 @@ where
         write_vec(create_file(&self.stderr_txt(run))?, stderr)?;
         let pwd = self.pwd_dir(&run);
         for f in files {
-            write_vec(create_file(&pwd.join(&f.name))?, &f.bytes)?;
+            let path = pwd.join(&f.name);
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            write_vec(create_file(&path)?, &f.bytes)?;
         }
         Ok(())
     }
