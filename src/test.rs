@@ -71,6 +71,8 @@ fn test_all_ran() {
 // use quickcheck::quickcheck;
 // quickcheck! {
     fn prop(benchmarks: BTreeSet<usize>, solvers: BTreeSet<usize>) -> bool {
+        let touch_file = PathBuf::from("file.txt");
+        let touch_dir = PathBuf::from("some/dir/path");
 
         let benchmark_strings = benchmarks.into_iter()
             .map(|x| format!("benchmark{}", x))
@@ -114,8 +116,13 @@ fn test_all_ran() {
             format!(r#" 
               #!/bin/bash 
               echo err {solver} $* >> /dev/stderr
+              mkdir -p {dir}
+              touch {dir}/{file}
               echo {solver} $*
-              "#, solver=s.parent().unwrap().canonicalize().unwrap().join(s.file_name().unwrap()).display())
+              "#, solver=s.parent().unwrap().canonicalize().unwrap().join(s.file_name().unwrap()).display()
+              , file=touch_file.display()
+              , dir=touch_dir.display()
+              )
         };
 
         let script_err = |solver: &PathBuf, benchmark: &PathBuf, timeout: u64| -> String { 
@@ -180,11 +187,13 @@ fn test_all_ran() {
                     stderr,
                     status,
                     exit_status,
+                    files,
                 } = res;
                 assert_eq!(String::from_utf8(stdout.clone()).unwrap(), script_out(&s, &b, timeout));
                 assert_eq!(String::from_utf8(stderr.clone()).unwrap(), script_err(&s, &b, timeout));
                 assert_eq!(exit_status, Some(0));
                 assert_eq!(status, BenchmarkStatus::Success);
+                assert_eq!(files, vec![FileConts { name: touch_dir.join(&touch_file), bytes: vec![], }])
             }
         }
         true

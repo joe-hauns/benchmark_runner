@@ -168,6 +168,7 @@ impl Service for ServiceImpl {
     }
 }
 
+
 fn run_command<P>(run: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
 where
     P: Benchmarker,
@@ -176,14 +177,18 @@ where
 
     // let mut cmd = Command::new(run.command());
     // cmd.args(run.args());
-    let mut cmd = run.to_command();
     let temp_dir = tempfile::tempdir().context("failed to create temp dir")?;
     let temp_dir = temp_dir.path();
     let stdout = temp_dir.join("stdout.txt");
     let stderr = temp_dir.join("stderr.txt");
+
+    let pwd = temp_dir.join("pwd");
+    std::fs::create_dir(&pwd).context("failed to create runtime dir")?;
+    let mut cmd = run.to_command();
     cmd.stdout(crate::dao::create_file(&stdout)?);
     cmd.stderr(crate::dao::create_file(&stderr)?);
-    let mut child =cmd.spawn().context("failed to launch child process")?;
+    cmd.current_dir(&pwd);
+    let mut child = cmd.spawn().context("failed to launch child process")?;
 
 
     use std::time::*;
@@ -199,19 +204,17 @@ where
         let with_bench_status = | exit_status: Option<i32>,
                                  status: BenchmarkStatus|
          -> Result<BenchRunResult<P>, Error> {
-            
-            let stdout = crate::dao::read_vec(&stdout)?;
-            let stderr = crate::dao::read_vec(&stderr)?;
 
+            // TODO collect output files from pwd 
             Ok(BenchRunResult {
                 run: run.clone(),
                 status,
                 time: start.elapsed(),
-                stdout,
-                stderr,
+                stdout: crate::dao::read_vec(&stdout)?,
+                stderr: crate::dao::read_vec(&stderr)?,
+                files: crate::dao::read_file_conts(&pwd)?,
                 exit_status,
             })
-
         };
 
         match status {

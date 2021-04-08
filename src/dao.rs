@@ -81,6 +81,13 @@ impl DaoImpl {
         self.outdir(run).join("meta.json")
     }
 
+    fn pwd_dir<P>(&self, run: &BenchRunConf<P>) -> PathBuf
+    where
+        P: Benchmarker
+    {
+        self.outdir(run).join("pwd")
+    }
+
     fn stdout_txt<P>(&self, run: &BenchRunConf<P>) -> PathBuf
     where
         P: Benchmarker
@@ -133,6 +140,7 @@ where
             exit_status,
             stdout,
             stderr,
+            files,
         } = run;
 
         let outdir = self.outdir(run);
@@ -149,6 +157,10 @@ where
         )?;
         write_vec(create_file(&self.stdout_txt(run))?, stdout)?;
         write_vec(create_file(&self.stderr_txt(run))?, stderr)?;
+        let pwd = self.pwd_dir(&run);
+        for f in files {
+            write_vec(create_file(&pwd.join(&f.name))?, &f.bytes)?;
+        }
         Ok(())
     }
 
@@ -167,6 +179,7 @@ where
 
         let stdout = read_vec(&self.stdout_txt(&run))?;
         let stderr = read_vec(&self.stderr_txt(&run))?;
+        let files  = read_file_conts(self.pwd_dir(&run))?;
 
         Ok(Some(BenchRunResult {
             run,
@@ -175,8 +188,46 @@ where
             exit_status,
             stdout,
             stderr,
+            files ,
         }))
     }
+}
+
+pub(crate) fn read_file_conts(dir: impl AsRef<Path>) -> Result<Vec<FileConts>> {
+    let dir = dir.as_ref();
+    let res = read_dir_rec(dir, |path|  
+        Ok(FileConts {
+            bytes: crate::dao::read_vec(&path)?,
+            name: path.strip_prefix(&dir).unwrap().to_owned(),
+        }));
+    res 
+}
+
+// TODO move all these function to own module `fs`
+pub fn read_dir_rec<P, F, A, E>(dir: P, mut f: F) -> Result<Vec<A>, E>
+    where P: AsRef<Path>,
+          F: FnMut(PathBuf) -> Result<A, E>,
+          E: From<std::io::Error>,
+{
+    let mut vec = Vec::new();
+    fn read_dir_rec<P, F, A, E>(vec: &mut Vec<A>, dir: P, func: &mut F) -> Result<(), E>
+        where P: AsRef<Path>,
+              F: FnMut(PathBuf) -> Result<A, E>,
+              E: From<std::io::Error>,
+    {
+        for f in std::fs::read_dir(dir)? {
+            let f = f?;
+            let path = f.path();
+            if path.is_dir() {
+                read_dir_rec(vec, path, func)?;
+            } else {
+                vec.push(func(path)?);
+            }
+        }
+        Ok(())
+    }
+    read_dir_rec(&mut vec, dir, &mut f)?;
+    Ok(vec)
 }
 
 // TODO move all these function to own module `fs`

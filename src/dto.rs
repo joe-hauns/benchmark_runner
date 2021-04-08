@@ -83,6 +83,13 @@ pub enum BenchmarkStatus {
 
 #[derive(Serialize, Deserialize, Derivative)]
 #[derivative( Clone(bound=""), Debug(bound=""), Hash(bound=""), Ord(bound=""), PartialOrd(bound=""), Eq(bound=""), PartialEq(bound="") )]
+pub(crate) struct FileConts {
+    pub(crate) name: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Derivative)]
+#[derivative( Clone(bound=""), Debug(bound=""), Hash(bound=""), Ord(bound=""), PartialOrd(bound=""), Eq(bound=""), PartialEq(bound="") )]
 pub struct BenchRunResult<P> 
     where P: Benchmarker + ?Sized
 {
@@ -96,6 +103,8 @@ pub struct BenchRunResult<P>
     pub(crate) stdout: Vec<u8>,
     #[derivative(Debug="ignore")]
     pub(crate) stderr: Vec<u8>,
+    #[derivative(Debug="ignore")]
+    pub(crate) files: Vec<FileConts>,
 }
 
 use std::fmt::Debug;
