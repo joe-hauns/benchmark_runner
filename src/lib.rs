@@ -40,6 +40,7 @@ use wait_timeout::ChildExt;
 use std::convert::*;
 pub use dao::*;
 pub use dao::read_dir;
+use core::result::Result::Ok;
 
 #[macro_export]
 macro_rules! log_err {
@@ -61,7 +62,8 @@ macro_rules! log_err_ {
 #[cfg(test)]
 mod test;
 
-#[derive(Clap, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Parser, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[clap(about, version, author)]
 /// A simple benchmark running tool.
 ///
 /// Gets a set of solvers and a set of benchmarks as inputs and runs each solver on each benchmark.
@@ -223,8 +225,7 @@ fn term_receiver() -> std::result::Result<Receiver<TermSignal>, TermSignal> {
     }
 }
 #[derive(ThisError, Debug)]
-pub enum Error {
-    #[error("{0}")]
+pub enum Error { #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
     #[error("{0}")]
     TermSignal(#[from] TermSignal),
@@ -273,7 +274,7 @@ where
     service.run(job, &dao, &post)
 }
 
-pub fn main_with_opts<P>(post: P, opts: Opts) -> Result<()>
+pub fn main_with_opts<P>(post: P, opts: Opts) -> std::result::Result<(), Error>
 where
     P: Benchmarker + Sync,
     P::Solver: FromDir,
@@ -281,20 +282,20 @@ where
 {
     match run_with_opts(post, opts) {
         Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
-        Err(Error::Anyhow(e)) => Err(e),
+        Err(Error::Anyhow(e)) => Err(e.into()),
     }
 }
 
 
 
-pub fn main_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> Result<()>
+pub fn main_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> std::result::Result<(), Error>
 where
     P: Benchmarker + Sync,
     // P::Benchmark: FromDir,
 {
     match run_with_conf(post, conf) {
         Ok(_) | Err(Error::TermSignal(TermSignal)) => Ok(()),
-        Err(Error::Anyhow(e)) => Err(e),
+        Err(Error::Anyhow(e)) => Err(e.into()),
     }
 }
 

@@ -1,10 +1,11 @@
-use super::*;
 use anyhow::*;
+use super::*;
 use std::fmt;
 use std::io;
 use std::process::*;
 use std::sync::Arc;
 use derivative::*;
+use std::result::Result::Ok;
 
 impl<P> fmt::Display for BenchRunConf<P> 
     where P: Benchmarker + ?Sized

@@ -1,5 +1,5 @@
-use benchmark_runner::*;
 use std::io;
+use benchmark_runner::*;
 use serde::*;
 use clap::*;
 use anyhow::Result;
@@ -26,5 +26,6 @@ impl Benchmarker for NopBenchmarker {
 }
 
 fn main() -> Result<()> {
-    benchmark_runner::main_with_opts(NopBenchmarker, Opts::parse())
+    benchmark_runner::main_with_opts(NopBenchmarker, Opts::parse())?;
+    Ok(())
 }
