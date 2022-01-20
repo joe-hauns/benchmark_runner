@@ -208,7 +208,7 @@ fn shall_terminate() -> bool {
 }
 
 #[allow(unused)]
-fn term_receiver() -> Result<Receiver<TermSignal>, TermSignal> {
+fn term_receiver() -> std::result::Result<Receiver<TermSignal>, TermSignal> {
     // let (tx, rx) = channel();
     let (tx, rx) = bounded(1);
     let mut lock = TERM_SEND
@@ -230,7 +230,7 @@ pub enum Error {
     TermSignal(#[from] TermSignal),
 }
 
-pub fn run_with_opts<P>(post: P, opts: Opts) -> Result<P::Reduced, Error>
+pub fn run_with_opts<P>(post: P, opts: Opts) -> std::result::Result<P::Reduced, Error>
 where
     P: Benchmarker + Sync,
     P::Solver: FromDir,
@@ -240,7 +240,7 @@ where
     run_with_conf(post, conf)
 }
 
-pub fn get_result<P>(dao: DaoConfig, service: ServiceConfig, ident: &BenchRunConf<P>) -> Result<BenchRunResult<P>, Error>
+pub fn get_result<P>(dao: DaoConfig, service: ServiceConfig, ident: &BenchRunConf<P>) -> std::result::Result<BenchRunResult<P>, Error>
 where
     P: Benchmarker + Sync,
     // P::Benchmark: FromDir,
@@ -257,7 +257,7 @@ where
 }
 
 
-pub fn run_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> Result<P::Reduced, Error>
+pub fn run_with_conf<P>(post: P, conf: ApplicationConfig<P>) -> std::result::Result<P::Reduced, Error>
 where
     P: Benchmarker + Sync,
     // P::Benchmark: FromDir,
